@@ -23,6 +23,32 @@ Normal model requests pass through to the fixed official OpenAI HTTPS endpoint. 
 
 There is **no extra Codex model inside the child**. The parent still consumes its normal Codex usage for planning, delegation, waiting and reporting. Claude Code consumes its own usage through its own login. AgentRelay itself performs no model inference. External usage events stay in the local registry; they are not fabricated as OpenAI token usage.
 
+### One delegation, end to end
+
+The parent prepares the full task before spawning the child. Codex manages the native thread; AgentRelay executes the external turn and records both the assignment and its answer.
+
+```mermaid
+sequenceDiagram
+    participant Parent as Codex parent
+    participant Prepare as AgentRelay prepare
+    participant Store as Private registries
+    participant Child as Native Codex child
+    participant Provider as Rust provider
+    participant CLI as Claude Code / CLI
+    Parent->>Prepare: Full task, actual root ID, agent path, workspace
+    Prepare->>Store: Snapshot task and authorized access
+    Parent->>Child: spawn_agent with CLI model alias
+    Child->>Provider: Responses request with native thread/turn IDs
+    Provider->>Store: Validate binding and claim turn once
+    Provider-->>Child: Assigned task commentary
+    Provider->>CLI: Execute or resume the external session
+    Note over Provider,CLI: No intermediate Codex model inference
+    CLI-->>Provider: Actual structured result
+    Provider->>Store: Persist result and external session
+    Provider-->>Child: Full assignment and final result
+    Child-->>Parent: Native completion and answer
+```
+
 ## Build and install
 
 Requirements: Rust/Cargo 1.95+, macOS or Linux, a recent Codex version supporting multi-agent v2/custom providers, and independently installed/authenticated external CLIs. Windows is not supported. Automatic background service installation currently targets macOS.
@@ -99,6 +125,22 @@ and Claude session; prepare the follow-up before sending followup_task.
 ```
 
 Wait for the current turn to end. Prepare a new task with the same root/path/runtime/workspace/access/model, then use the native follow-up tool. The same relay task and CLI session continue with a new generation. Runtime, model and access changes require a new agent path/task.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Prepared: Explicit task snapshot
+    Prepared --> Running: Native turn claims assignment
+    Running --> Completed: Structured success and exit zero
+    Running --> Failed: Runtime or protocol error
+    Running --> Interrupted: Cancel, timeout or disconnected stream
+    Completed --> Completed: Retry same turn returns saved result
+    Completed --> Prepared: Prepare follow-up for same child and CLI session
+    note right of Running
+        Duplicate active turn is rejected.
+        Ownership and generation checks
+        prevent stale results.
+    end note
+```
 
 For cancellation, ask to interrupt the associated AgentRelay task and confirm its terminal state. A disconnected provider stream also requests cancellation and reaps the CLI process group. Desktop Stop-button behavior remains a separate host-level acceptance check; do not assume every UI control closes that stream immediately.
 
