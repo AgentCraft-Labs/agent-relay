@@ -49,7 +49,45 @@ sequenceDiagram
     Child-->>Parent: Native completion and answer
 ```
 
-## Build and install
+## Download and run on macOS
+
+Download a prebuilt companion from [GitHub Releases](https://github.com/mapo80/agnet-relay/releases/latest). Rust is not required to run it. Choose `macos-arm64` for Apple Silicon or `macos-x86_64` for Intel. The companion is a terminal executable and optional background service; the interface remains the official Codex app.
+
+For version 0.3.0, download and verify the archive in Terminal:
+
+```bash
+relay_version=0.3.0
+relay_arch=$(uname -m)
+relay_archive="agentrelay-v${relay_version}-macos-${relay_arch}.tar.gz"
+relay_url="https://github.com/mapo80/agnet-relay/releases/download/v${relay_version}"
+curl --fail --location --remote-name "$relay_url/$relay_archive"
+curl --fail --location --remote-name "$relay_url/$relay_archive.sha256"
+shasum -a 256 -c "$relay_archive.sha256"
+tar -xzf "$relay_archive"
+cd "${relay_archive%.tar.gz}"
+./agentrelay --version
+```
+
+The release also provides combined `SHA256SUMS`. These hashes verify download integrity; the binaries are not Developer ID signed or notarized. If macOS blocks execution, review the download and use the normal macOS approval controls. No Gatekeeper bypass is installed.
+
+Install/authenticate Claude Code separately, and open/login to Codex once so it has a current model cache. Then install the companion for all local projects of your user:
+
+```bash
+./agentrelay codex install --user
+relay_command="$HOME/.agents/skills/agentrelay/scripts/agentrelay"
+"$relay_command" profile add haiku55_high --runtime claude \
+  --model "Haiku 5.5" --effort high --display-name "Claude Haiku 5.5"
+"$relay_command" codex configure
+"$relay_command" codex service-install
+```
+
+Start a new Codex conversation using the `agentrelay` provider; restart Codex if it retains the previous catalog. Ask to use `$agentrelay` with Haiku 5.5 high. The native profile exposes the corresponding model name and effort through Codex's catalog/thread settings.
+
+To run in the foreground instead of installing the background service, use `"$relay_command" serve`. Use one service instance on the configured port. To stop the macOS service, first finish or interrupt active tasks, then run `launchctl bootout gui/$(id -u)/com.agentrelay.provider`. Provider routing depends on the running service; restore the original provider settings when disabling it permanently.
+
+The installed executable stays at `~/.agents/skills/agentrelay/scripts/agentrelay`. Commands below use the short name `agentrelay`; either use that full path or add its directory to your PATH. See [release automation](docs/releases.md) for build, packaging and update details.
+
+## Build from source
 
 Requirements: Rust/Cargo 1.95+, macOS or Linux, a recent Codex version supporting multi-agent v2/custom providers, and independently installed/authenticated external CLIs. Windows is not supported. Automatic background service installation currently targets macOS.
 
@@ -108,6 +146,60 @@ AgentRelay. Riporta il risultato e le verifiche realmente eseguite.
 ```
 
 For authorized edits, explicitly request `workspace-write`. The parent prepares the assignment, then creates one native child using role `agentrelay_claude` and fresh context. The full task is persisted before spawning; opaque native encrypted messages are never decoded or treated as a plaintext task.
+
+### Choose the external model and reasoning effort
+
+Write naturally in the main Codex conversation:
+
+```text
+Use $agentrelay to delegate [TASK] to Claude Code using Haiku 5.5 high.
+Create the native agent claude_review and work read-only.
+```
+
+The skill translates that into separate execution settings:
+
+```bash
+agentrelay prepare --runtime claude --model "Haiku 5.5" --effort high \
+  --workspace /absolute/project --root-id ACTUAL_ROOT_SESSION_ID \
+  --agent-path /root/claude_review --prompt-file /private/task.txt
+```
+
+`Haiku 5.5` normalizes to `claude-haiku-5-5`. Both `prepare` and standalone `run` accept model and effort. Known incompatible combinations or outdated Claude versions fail explicitly; AgentRelay does not select a replacement model. Full vendor IDs are passed through so new models and provider deployments do not depend on a fixed availability list.
+
+| Runtime | Model selection | Effort delivery |
+| --- | --- | --- |
+| Claude Code | `--model claude-haiku-5-5` | `--effort high` |
+| Codex CLI | `--model MODEL_ID` | `--config 'model_reasoning_effort="high"'` |
+| Custom JSONL | `model` input | Optional `effort` input; driver must declare `supports_effort = true` |
+
+Selections persist across resumes. Repeat the same flags for native follow-ups; a changed selection needs a new agent path. Versionless Claude family aliases are pinned to their observed version on resume. The result distinguishes requested model, observed model and requested effort. Applied effort is not independently acknowledged by the CLI; the record proves argument submission rather than provider-side reasoning or policy compliance.
+
+Haiku 5.5 requires Claude Code 2.1.293 or later; live acceptance used 2.1.300. See [Claude Code model configuration](https://code.claude.com/docs/en/model-config) and [selection behavior](docs/model-selection.md).
+
+### Native model label and effort selector
+
+Register a profile once so Codex receives a real catalog entry and native role for the selection:
+
+```bash
+agentrelay profile add haiku55_high --runtime claude \
+  --model "Haiku 5.5" --effort high --display-name "Claude Haiku 5.5"
+agentrelay codex configure
+```
+
+Start a new Codex conversation; restart the app if it retains the previous catalog. A matching `prepare` returns role `agentrelay_profile_haiku55_high`, model `agentrelay-profile-haiku55_high`, and native effort `high`. The parent uses that returned selection. Codex's model API exposes display name **Claude Haiku 5.5**, and the child's native settings expose that profile and effort **high**. This integrates with the model information used by the app's selected-agent panel, instead of only writing a label into a response.
+
+```mermaid
+flowchart LR
+    Request[Haiku 5.5 high] --> Profile[Immutable model profile]
+    Profile --> Catalog[Codex catalog display name]
+    Profile --> Role[Native role and high effort]
+    Profile --> Runner[Claude CLI model and effort flags]
+    Catalog --> Panel[Selected-agent model information]
+    Role --> Panel
+    Runner --> Check[Observed model validation]
+```
+
+Profiles are immutable: changing model, effort or label needs a new profile and agent. A different native picker setting is rejected when it disagrees with the prepared profile; changing the picker alone does not rewrite the external task. Generic runtime aliases remain available when no profile matches. `profile list` shows registered selections. Native catalog/thread fields are tested; the rendered top-right widget remains subject to the desktop visual-verification limitation below.
 
 ### What appears in the agent detail
 

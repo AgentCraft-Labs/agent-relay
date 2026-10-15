@@ -45,6 +45,7 @@ fn commands_have_explicit_access_and_resume_identity() {
                 workspace: dir.path().into(),
                 prompt: "literal $(do-not-execute)".into(),
                 model: None,
+                effort: None,
                 access: Access::ReadOnly,
                 root_id: None,
                 agent_id: None,

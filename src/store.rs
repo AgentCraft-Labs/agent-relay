@@ -297,6 +297,10 @@ impl Store {
             "Task no longer accepts runtime output"
         );
         let (kind, data) = match event {
+            RuntimeEvent::Model { id } => {
+                task.actual_model = Some(id.clone());
+                ("model", json!({"model":id}))
+            }
             RuntimeEvent::Session { id, model } => {
                 if let Some(previous) = &task.session_id {
                     ensure!(previous == &id, "Runtime changed its session identity");

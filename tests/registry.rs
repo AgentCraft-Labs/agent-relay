@@ -8,6 +8,7 @@ fn request() -> RunRequest {
         workspace: std::env::current_dir().unwrap(),
         prompt: "Read the fixture".into(),
         model: None,
+        effort: None,
         access: Access::ReadOnly,
         root_id: Some("root-a".into()),
         agent_id: Some("worker-a".into()),

@@ -1,6 +1,8 @@
 pub mod codex;
 pub mod model;
+pub mod profiles;
 pub mod provider;
 pub mod runner;
 pub mod runtime;
+pub mod selection;
 pub mod store;

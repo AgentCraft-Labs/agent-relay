@@ -29,6 +29,7 @@ args = ["serve-one-turn"]
 resume_args = ["--resume", "{session_id}"]
 version_args = ["--version"]
 session_resume = true
+supports_effort = true
 ```
 
 Arguments are passed directly to a process, never evaluated as shell expressions. Only custom JSONL adapters accept argument templates. Environment overrides `AGENTRELAY_CLAUDE_BIN` and `AGENTRELAY_CODEX_BIN` apply to built-in defaults when no explicit configuration entry exists.
@@ -51,6 +52,8 @@ The executable receives one UTF-8 JSON object on stdin followed by EOF. The obje
 ```
 
 For a resumed turn, generation increases and resume_session_id contains the previous external ID. The driver must preserve that session identity. Access is `read_only` or `workspace_write`.
+
+Drivers declaring `supports_effort = true` may also receive `"effort": "high"` when requested. The field is omitted otherwise. Apply the setting or fail explicitly; ignoring it violates the driver contract. Model and effort persist across resumes. See [model selection](model-selection.md).
 
 Stdout must contain JSON objects separated by newlines. Logging belongs on stderr. Supported events:
 

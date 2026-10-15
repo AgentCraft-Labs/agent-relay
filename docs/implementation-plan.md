@@ -12,6 +12,8 @@
 8. Provide protected project/user installation, augmented model catalog configuration and macOS LaunchAgent setup.
 9. Exercise real Claude work, native follow-up, a real authenticated OpenAI parent, HTTP cancellation and failure boundaries.
 10. Publish only source, templates, documentation and sanitized aggregate evidence after checking the exact Git payload for sensitive data.
+11. Support explicit external model/effort selection with normalization, version/capability checks, resume preservation and observed-model validation.
+12. Register immutable profiles through the native model catalog and agent roles; verify display names, native reasoning settings and execution alignment through the official app-server.
 
 ## Release checks
 

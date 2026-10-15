@@ -1,19 +1,19 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "date": "2026-10-15",
-  "release": "0.2.0",
+  "release": "0.3.0",
   "official_binary": {
     "version": "codex-cli 0.162.0-alpha.17.2",
     "sha256": "50ab38ba21d0d9f8346f32f41848382f15b556190f3c7a07e885a4fb73e379c8",
     "modified": false
   },
   "ordinary_tests": {
-    "passed": 17,
+    "passed": 25,
     "failed": 0,
-    "native_live_tests_ignored_by_default": 10
+    "native_live_tests_ignored_by_default": 11
   },
   "native_acceptance": {
-    "passed": 10,
+    "passed": 11,
     "failed": 0,
     "real_parent": true,
     "real_claude_cli": true,
@@ -33,10 +33,12 @@
     "normal_user_configuration": true,
     "isolated_codex_home": false,
     "parent_provider": "agentrelay",
-    "child_model": "agentrelay-claude",
+    "child_model": "agentrelay-profile-haiku55_high",
     "official_app_read_thread_confirmed": true,
     "official_app_navigation_succeeded": true,
-    "full_task_and_real_result_recorded": true
+    "full_task_and_real_result_recorded": true,
+    "native_reasoning_effort": "high",
+    "native_model_profile": "haiku55_high"
   },
   "process_checks": {
     "http_disconnect_cancels_and_reaps_cli": true,
@@ -58,5 +60,18 @@
     "local_user_paths_included": false,
     "conversation_ids_included": false,
     "raw_transcripts_included": false
+  },
+  "model_selection": {
+    "claude_code_version": "2.1.300",
+    "haiku_55_high_live_test_passed": true,
+    "requested_model": "claude-haiku-5-5",
+    "observed_model": "claude-haiku-5-5",
+    "requested_effort": "high",
+    "effort_verification": "cli_argument_only",
+    "native_model": "agentrelay-profile-haiku55_high",
+    "native_reasoning_effort": "high",
+    "native_catalog_display_name": "Claude Haiku 5.5",
+    "same_session_followup": true,
+    "native_widget_visually_verified": false
   }
 }

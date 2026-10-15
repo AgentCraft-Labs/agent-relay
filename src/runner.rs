@@ -21,7 +21,7 @@ pub fn emit(value: &impl serde::Serialize) -> Result<()> {
 }
 
 pub fn summary(task: &Task) -> Value {
-    json!({"type":"task_result","task_id":task.id,"generation":task.generation,"runtime":task.request.runtime,"status":task.status,"session_id":task.session_id,"model":task.actual_model,"result":task.result,"error":task.error})
+    json!({"type":"task_result","task_id":task.id,"generation":task.generation,"runtime":task.request.runtime,"status":task.status,"session_id":task.session_id,"model":task.actual_model,"requested_model":task.request.model,"requested_effort":task.request.effort,"effort_verification":if task.request.effort.is_some(){"cli_argument_only"}else{"runtime_default"},"result":task.result,"error":task.error})
 }
 
 pub async fn execute(store: &Store, claim: Claim, mut adapter: CliAdapter) -> Result<Task> {
@@ -32,7 +32,11 @@ pub async fn execute(store: &Store, claim: Claim, mut adapter: CliAdapter) -> Re
         emit(&summary(&claim.task))?;
         return Ok(claim.task);
     }
-    let outcome = run_process(store, &claim, &mut adapter).await;
+    let outcome = async {
+        adapter.preflight(&claim.task.request).await?;
+        run_process(store, &claim, &mut adapter).await
+    }
+    .await;
     let (status, result, error) = match outcome {
         Ok((status, result, error)) => (status, result, error),
         Err(error) => (Status::Failed, None, Some(format!("{error:#}"))),
@@ -56,6 +60,9 @@ async fn run_process(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    for name in &launch.env_remove {
+        command.env_remove(name);
+    }
     #[cfg(unix)]
     command.process_group(0);
     let mut child = command
@@ -140,6 +147,11 @@ async fn run_process(
                 if line.trim().is_empty() { continue; }
                 let frame: Value = serde_json::from_str(&line).context("Runtime emitted invalid JSON")?;
                 for event in adapter.decode(frame)? {
+                    let model = match &event {
+                        RuntimeEvent::Session {model:Some(model),..} => Some(model.clone()),
+                        RuntimeEvent::Model {id} => Some(id.clone()),
+                        _ => None,
+                    };
                     match &event {
                         RuntimeEvent::Result { text,.. } => {
                             ensure!(terminal.is_none(),"Runtime emitted duplicate terminal results");
@@ -152,6 +164,9 @@ async fn run_process(
                         _ => {}
                     }
                     emit(&store.observe(claim,event)?)?;
+                    // Store the observation first, including on mismatch, so a
+                    // failed task still reports which model actually answered.
+                    if let Some(model)=model {adapter.validate_observed_model(&claim.task.request,&model)?;}
                 }
             }
         }

@@ -14,6 +14,7 @@ fn assignment(workspace: &std::path::Path) -> Assignment {
             workspace: workspace.into(),
             prompt: "Read the fixture".into(),
             model: None,
+            effort: None,
             access: Access::ReadOnly,
             root_id: None,
             agent_id: None,
@@ -85,6 +86,10 @@ fn prepared_prompt_is_snapshotted_and_write_access_cannot_be_upgraded() {
         .unwrap();
     changed.request.access = Access::WorkspaceWrite;
     assert!(registry.prepare(&changed).is_err());
+    let mut effort_change = original.clone();
+    effort_change.request.prompt = "Continue".into();
+    effort_change.request.effort = Some("high".into());
+    assert!(registry.prepare(&effort_change).is_err());
     let writable = Registry::open(&dir.path().join("other-state")).unwrap();
     writable.prepare(&changed).unwrap();
     assert!(writable.claim(&request("root-a", "child", "turn")).is_err());
@@ -123,6 +128,68 @@ fn provider_configuration_keeps_models_and_existing_settings_and_backs_up_once()
         agent_relay::codex::configure(&home, &codex, &catalog, "0.0.0.0:39091".parse().unwrap())
             .is_err()
     );
+}
+
+#[test]
+fn native_profiles_install_real_catalog_roles_and_reject_mismatched_picker_settings() {
+    use agent_relay::profiles::{self, Profile};
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("state");
+    let codex = dir.path().join("codex");
+    let registry = Registry::open(&home).unwrap();
+    let profile = Profile {
+        runtime: "claude".into(),
+        model: "Haiku 5.5".into(),
+        effort: Some("high".into()),
+        display_name: "Claude Haiku 5.5".into(),
+    };
+    let canonical = profiles::add(&home, "haiku55_high", profile.clone()).unwrap();
+    assert_eq!(canonical.model, "claude-haiku-5-5");
+    profiles::add(&home, "haiku55_high", profile.clone()).unwrap();
+    let mut changed = profile;
+    changed.effort = Some("low".into());
+    assert!(profiles::add(&home, "haiku55_high", changed).is_err());
+    let catalog = dir.path().join("catalog.json");
+    std::fs::write(
+        &catalog,
+        json!({"models":[{"slug":"openai","retained":true}]}).to_string(),
+    )
+    .unwrap();
+    agent_relay::codex::configure(&home, &codex, &catalog, "127.0.0.1:39091".parse().unwrap())
+        .unwrap();
+    let generated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(home.join("models.json")).unwrap()).unwrap();
+    let model = generated["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["slug"] == profiles::model_alias("haiku55_high"))
+        .unwrap();
+    assert_eq!(model["display_name"], "Claude Haiku 5.5");
+    assert_eq!(model["default_reasoning_level"], "high");
+    let role = codex.join("agents/agentrelay_profile_haiku55_high.toml");
+    let role_data = std::fs::read_to_string(&role).unwrap();
+    assert!(role_data.contains("model_reasoning_effort = \"high\""));
+    let mut task = assignment(dir.path());
+    task.request.model = Some("Haiku 5.5".into());
+    task.request.effort = Some("high".into());
+    registry.prepare(&task).unwrap();
+    assert!(registry.claim(&request("root-a", "child", "turn")).is_err());
+    let mut input = request("root-a", "child", "turn");
+    input["model"] = json!(profiles::model_alias("haiku55_high"));
+    input["reasoning"] = json!({"effort":"low"});
+    assert!(registry.claim(&input).is_err());
+    input["reasoning"]["effort"] = json!("high");
+    assert!(matches!(
+        registry.claim(&input).unwrap(),
+        Delivery::Execute { .. }
+    ));
+    std::fs::write(&role, "user edited role").unwrap();
+    assert!(
+        agent_relay::codex::configure(&home, &codex, &catalog, "127.0.0.1:39091".parse().unwrap())
+            .is_err()
+    );
+    assert_eq!(std::fs::read_to_string(role).unwrap(), "user edited role");
 }
 
 #[cfg(unix)]

@@ -185,7 +185,7 @@ fn serve(mut stream: TcpStream, state: &State) -> Result<()> {
         stream.flush()?;
         return Ok(());
     }
-    if request["model"] == CHILD
+    if (request["model"] == CHILD || request["model"] == "agentrelay-profile-haiku55_high")
         && let Some(gateway) = &state.gateway
     {
         let response = reqwest::blocking::Client::new()
@@ -504,20 +504,35 @@ fn prepare_production(workspace: &Path, root: &str, prompt: &str) -> Result<()> 
         model::{Access, RunRequest},
         provider::{Assignment, Registry},
     };
-    Registry::open(&workspace.join("relay-state"))?.prepare(&Assignment {
-        root_id: root.into(),
-        agent_path: "/root/claude_worker".into(),
-        request: RunRequest {
+    let previous = agent_relay::store::Store::open(&workspace.join("relay-state"))?
+        .list(Some(root))?
+        .into_iter()
+        .next();
+    let request = if let Some(previous) = previous {
+        let mut request = previous.request;
+        request.prompt = prompt.into();
+        request.root_id = None;
+        request.agent_id = None;
+        request.agent_path = None;
+        request
+    } else {
+        RunRequest {
             runtime: "claude".into(),
             workspace: workspace.into(),
             prompt: prompt.into(),
             model: None,
+            effort: None,
             access: Access::ReadOnly,
             root_id: None,
             agent_id: None,
             agent_path: None,
             timeout_secs: 45,
-        },
+        }
+    };
+    Registry::open(&workspace.join("relay-state"))?.prepare(&Assignment {
+        root_id: root.into(),
+        agent_path: "/root/claude_worker".into(),
+        request,
     })
 }
 
@@ -580,22 +595,55 @@ async fn probe(
         claude_calls: AtomicUsize::new(0),
         route_claude,
         plaintext,
-        role: "claude_direct".into(),
+        role: if name == "product-haiku-high" {
+            "agentrelay_profile_haiku55_high".into()
+        } else {
+            "claude_direct".into()
+        },
         workspace: workspace.clone(),
         relay: relay.clone(),
         runtime_results: Mutex::new(Vec::new()),
         handoff: Mutex::new(None),
         relay_task: Mutex::new(None),
-        followup: name == "prepared-followup" || name == "product-followup",
+        followup: matches!(
+            name,
+            "prepared-followup" | "product-followup" | "product-haiku-high"
+        ),
         live_parent,
         forward_statuses: Mutex::new(Vec::new()),
         gateway: gateway.clone(),
     };
     let server = Server::start(create_state())?;
     let alternate = Server::start(create_state())?;
+    let mut catalog = models(&root_model)?;
+    if name == "product-haiku-high" {
+        let profile = agent_relay::profiles::add(
+            &workspace.join("relay-state"),
+            "haiku55_high",
+            agent_relay::profiles::Profile {
+                runtime: "claude".into(),
+                model: "Haiku 5.5".into(),
+                effort: Some("high".into()),
+                display_name: "Claude Haiku 5.5".into(),
+            },
+        )?;
+        let template = catalog["models"][0].clone();
+        catalog["models"]
+            .as_array_mut()
+            .unwrap()
+            .push(agent_relay::profiles::catalog_entry(
+                &template,
+                "haiku55_high",
+                &profile,
+            ));
+        std::fs::write(
+            home.join("agents/agentrelay_profile_haiku55_high.toml"),
+            agent_relay::profiles::role_document("haiku55_high", &profile)?,
+        )?;
+    }
     std::fs::write(
         home.join("models.json"),
-        serde_json::to_vec_pretty(&models(&root_model)?)?,
+        serde_json::to_vec_pretty(&catalog)?,
     )?;
     let marker = workspace.join("ROLE_COMMAND_WAS_EXECUTED");
     let role = format!(
@@ -629,6 +677,7 @@ async fn probe(
     let stderr = temporary.path().join("app-server.log");
     let outcome=async {
         let mut client=Client::start(&binary,&home,&stderr).await?;
+        let model_catalog=client.rpc("model/list",json!({"includeHidden":true,"limit":100})).await?;
         let developer=if live_parent {"This is a native delegation acceptance test. A bound plaintext handoff is already prepared for /root/claude_worker. You must call collaboration.spawn_agent exactly once with task_name claude_worker, agent_type claude_direct, fork_turns none, and a short message saying to use the prepared handoff. Do not create a Codex supervisor or solve the task yourself. Wait for the child result, then report it. Do not use shell or other tools."}else{"Do not use tools except the scripted collaboration tools."};
         let started=client.rpc("thread/start",json!({"model":root_model,"cwd":workspace,"approvalPolicy":"never","sandbox":"read-only","baseInstructions":"Follow the explicit test task.","developerInstructions":developer})).await?;
         let root=started["thread"]["id"].as_str().context("Root thread ID")?.to_owned();
@@ -636,7 +685,15 @@ async fn probe(
             let prompt_file=workspace.join("explicit-handoff.txt");std::fs::write(&prompt_file,TASK)?;
             let root_binding=if name=="prepared-wrong-root" {"unrelated-root"}else{&root};
             *server.state.handoff.lock().unwrap()=Some(json!({"root_id":root_binding,"agent_path":"/root/claude_worker","prompt_file":prompt_file}));
-            if production {prepare_production(&workspace,&root,TASK)?;}
+            if production {
+                if name=="product-haiku-high" {
+                    let prompt=workspace.join("explicit-handoff.txt");
+                    let output=std::process::Command::new(&relay).arg("--home").arg(workspace.join("relay-state"))
+                        .args(["prepare","--runtime","claude","--model","Haiku 5.5","--effort","high","--timeout-seconds","45","--root-id",&root,"--agent-path","/root/claude_worker","--workspace"])
+                        .arg(&workspace).arg("--prompt-file").arg(prompt).output()?;
+                    ensure!(output.status.success(),"Model selection preflight failed: {}",String::from_utf8_lossy(&output.stderr));
+                }else{prepare_production(&workspace,&root,TASK)?;}
+            }
         }
         client.rpc("turn/start",json!({"threadId":root,"input":[{"type":"text","text":"Run the native child acceptance test."}]})).await?;
         loop {
@@ -650,7 +707,7 @@ async fn probe(
             .find(|item|item["type"]=="subAgentActivity" && item["kind"]=="started")
             .and_then(|item|item["agentThreadId"].as_str()).map(str::to_owned);
         let child=if let Some(id)=&child_id {Some(client.rpc("thread/read",json!({"threadId":id,"includeTurns":true})).await?)}else{None};
-        let result=json!({"case":name,"official_binary":binary,"root_thread_id":root,"child_thread_id":child_id,"parent":parent,"child":child,"notifications":client.notifications,"provider_requests":server.state.requests.lock().unwrap().clone(),"alternate_provider_requests":alternate.state.requests.lock().unwrap().clone(),"claude_cli_invocations":server.state.claude_calls.load(Ordering::SeqCst),"runtime_results":server.state.runtime_results.lock().unwrap().clone(),"role_command_executed":marker.exists(),"root_inference":if live_parent {"Real authenticated OpenAI parent via official HTTPS upstream"}else{"scripted local fixture; no OpenAI inference"},"upstream_statuses":server.state.forward_statuses.lock().unwrap().clone(),"user_configuration_modified":false,"codex_binary_recompiled":false});
+        let result=json!({"case":name,"official_binary":binary,"root_thread_id":root,"child_thread_id":child_id,"parent":parent,"child":child,"model_catalog":model_catalog,"notifications":client.notifications,"provider_requests":server.state.requests.lock().unwrap().clone(),"alternate_provider_requests":alternate.state.requests.lock().unwrap().clone(),"claude_cli_invocations":server.state.claude_calls.load(Ordering::SeqCst),"runtime_results":server.state.runtime_results.lock().unwrap().clone(),"role_command_executed":marker.exists(),"root_inference":if live_parent {"Real authenticated OpenAI parent via official HTTPS upstream"}else{"scripted local fixture; no OpenAI inference"},"upstream_statuses":server.state.forward_statuses.lock().unwrap().clone(),"user_configuration_modified":false,"codex_binary_recompiled":false});
         client.child.kill().await?;
         Ok::<_,anyhow::Error>(result)
     }.await;
@@ -714,7 +771,15 @@ fn verify_native_answer(result: &Value, answer: &str) -> Result<()> {
         thread["parentThreadId"] == result["root_thread_id"],
         "Child is not registered under the actual parent"
     );
-    ensure!(thread["model"] == CHILD, "Unexpected child model identity");
+    let expected_model = if result["case"] == "product-haiku-high" {
+        "agentrelay-profile-haiku55_high"
+    } else {
+        CHILD
+    };
+    ensure!(
+        thread["model"] == expected_model,
+        "Unexpected child model identity"
+    );
     ensure!(
         thread["source"].get("subAgent").is_some(),
         "Not a native subagent source"
@@ -1035,6 +1100,76 @@ async fn product_followup_preserves_native_and_external_session() -> Result<()> 
     ensure!(
         result["child"]["thread"]["turns"].as_array().unwrap().len() == 2,
         "Changed native identity"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Explicit model-selection acceptance: real Haiku 5.5 with high effort through official native child"]
+async fn product_haiku_55_high_is_selected_and_visible_in_native_thread() -> Result<()> {
+    let result = probe("product-haiku-high", true, false, false).await?;
+    verify_native_answer(&result, "NATIVE_CLAUDE_SUM=73")?;
+    verify_native_answer(&result, "NATIVE_CLAUDE_DOUBLED=146")?;
+    let observed = &result["runtime_results"][0];
+    ensure!(
+        result["child"]["thread"]["reasoningEffort"] == "high",
+        "Native effort selector does not reflect the profile"
+    );
+    let native_model = result["model_catalog"]["data"]
+        .as_array()
+        .context("Missing native model catalog")?
+        .iter()
+        .find(|model| model["model"] == "agentrelay-profile-haiku55_high")
+        .context("Profile missing from the official native model list")?;
+    ensure!(
+        native_model["displayName"] == "Claude Haiku 5.5"
+            && native_model["defaultReasoningEffort"] == "high",
+        "Native picker label or effort mismatch"
+    );
+    ensure!(
+        observed["requested_model"] == "claude-haiku-5-5",
+        "Human model name was not normalized"
+    );
+    ensure!(
+        observed["model"] == "claude-haiku-5-5",
+        "A different model actually answered"
+    );
+    ensure!(
+        observed["requested_effort"] == "high",
+        "Effort selection was lost"
+    );
+    ensure!(
+        observed["effort_verification"] == "cli_argument_only",
+        "Unproven applied effort was claimed"
+    );
+    let final_text = result["child"]["thread"]["turns"][0]["items"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["text"]
+        .as_str()
+        .unwrap();
+    ensure!(
+        final_text.contains("Requested model: claude-haiku-5-5")
+            && final_text.contains("Observed model: claude-haiku-5-5")
+            && final_text.contains("Requested effort: high"),
+        "Selection details are missing from native history"
+    );
+    ensure!(
+        result["claude_cli_invocations"] == 2,
+        "Expected the initial turn and one follow-up"
+    );
+    let followup = &result["runtime_results"][1];
+    ensure!(
+        followup["requested_model"] == observed["requested_model"]
+            && followup["model"] == observed["model"]
+            && followup["requested_effort"] == "high",
+        "Follow-up lost model or effort"
+    );
+    ensure!(
+        followup["task_id"] == observed["task_id"]
+            && followup["session_id"] == observed["session_id"],
+        "Follow-up changed external identity"
     );
     Ok(())
 }

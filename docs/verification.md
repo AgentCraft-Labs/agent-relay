@@ -22,6 +22,7 @@ Provider tests additionally cover root/child/runtime binding, prompt snapshots, 
 | Production provider task visibility | Child history contains full assignment commentary and final assignment/result |
 | Production provider follow-up | Same task/session through the shipped provider implementation |
 | Real OpenAI parent | Authenticated parent creates one native CLI child and reports its actual result |
+| Haiku 5.5 high native profile | Real Haiku selection, same-session follow-up, catalog display name, native model/effort and execution settings in history |
 
 The fixture file contains 19, 23 and 31. Actual Claude reads it and returns `NATIVE_CLAUDE_SUM=73`; the follow-up recalls the sum and returns `NATIVE_CLAUDE_DOUBLED=146`. Tests check real Read activity, native thread source/parent links, native completion events and session identity. The live parent probe checks that all forwarded OpenAI requests originate from the root and that no extra native agent is inserted.
 
@@ -29,7 +30,7 @@ The real-parent probe uses a controlled routing fixture for observing parent req
 
 A subsequent installed-provider acceptance also passed using the normal user configuration and globally installed service, with both parent and child routed through the production provider. The desktop app's own `read_thread` capability returned the completed native child containing the exact assignment and real result, and `navigate_to_codex_page` successfully opened it in the app. This confirms app-accessible persistence and navigation, while still leaving rendered layout unverified.
 
-The ten native tests passed together. Exact aggregate checks and hashes belong in [sanitized results](../evidence/native-provider-results.json). Full transcripts and local identifiers remain excluded from version control.
+The current suite includes eleven native tests. The selection extension used Claude Code 2.1.300 and adds twenty-five ordinary checks in total, including native profile installation and mismatched picker-setting rejection. Exact aggregate checks and hashes belong in [sanitized results](../evidence/native-provider-results.json). Full transcripts and local identifiers remain excluded from version control.
 
 ## Desktop verification boundary
 

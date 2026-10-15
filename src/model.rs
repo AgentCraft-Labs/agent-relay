@@ -40,6 +40,8 @@ pub struct RunRequest {
     pub workspace: PathBuf,
     pub prompt: String,
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     pub access: Access,
     pub root_id: Option<String>,
     #[serde(alias = "supervisor_id")]
@@ -101,6 +103,9 @@ pub struct Claim {
 
 #[derive(Debug, Clone)]
 pub enum RuntimeEvent {
+    Model {
+        id: String,
+    },
     Session {
         id: String,
         model: Option<String>,

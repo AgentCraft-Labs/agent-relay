@@ -26,6 +26,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Register immutable native model labels and their external execution settings.
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
     /// Serve the local Responses provider; forward normal models to OpenAI.
     Serve {
         #[arg(long, default_value = "127.0.0.1:39091")]
@@ -41,6 +46,9 @@ enum Command {
         prompt_file: Option<PathBuf>,
         #[arg(long)]
         model: Option<String>,
+        /// Reasoning effort for the external CLI, separate from the native model alias.
+        #[arg(long)]
+        effort: Option<String>,
         #[arg(long, value_enum, default_value = "read-only")]
         access: Access,
         #[arg(long, default_value_t = 1800)]
@@ -119,6 +127,8 @@ struct RunArgs {
     prompt_file: Option<PathBuf>,
     #[arg(long)]
     model: Option<String>,
+    #[arg(long)]
+    effort: Option<String>,
     #[arg(long, value_enum, default_value = "read-only")]
     access: Access,
     #[arg(long, default_value_t = 1800)]
@@ -129,6 +139,22 @@ struct RunArgs {
     agent_id: Option<String>,
     #[arg(long)]
     agent_path: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum ProfileCommand {
+    Add {
+        name: String,
+        #[arg(long, default_value = "claude")]
+        runtime: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        effort: Option<String>,
+        #[arg(long)]
+        display_name: Option<String>,
+    },
+    List,
 }
 
 #[derive(Subcommand)]
@@ -232,12 +258,40 @@ async fn run(cli: Cli) -> Result<()> {
     }
     let store = Store::open(&home)?;
     match cli.command {
+        Command::Profile {
+            command:
+                ProfileCommand::Add {
+                    name,
+                    runtime,
+                    model,
+                    effort,
+                    display_name,
+                },
+        } => {
+            let profile = agent_relay::profiles::add(
+                &home,
+                &name,
+                agent_relay::profiles::Profile {
+                    runtime,
+                    display_name: display_name.unwrap_or_else(|| model.clone()),
+                    model,
+                    effort,
+                },
+            )?;
+            runner::emit(
+                &json!({"profile":name,"selection":profile,"native_model":agent_relay::profiles::model_alias(&name),"native_role":agent_relay::profiles::role_name(&name),"configure_required":true,"new_conversation_required":true}),
+            )?;
+        }
+        Command::Profile {
+            command: ProfileCommand::List,
+        } => runner::emit(&agent_relay::profiles::load(&home)?)?,
         Command::Serve { listen } => provider::serve(&home, listen).await?,
         Command::Prepare {
             runtime,
             workspace,
             prompt_file,
             model,
+            effort,
             access,
             timeout_seconds,
             root_id,
@@ -246,24 +300,30 @@ async fn run(cli: Cli) -> Result<()> {
             let root_id = root_id
                 .or_else(|| std::env::var("CODEX_SESSION_ID").ok())
                 .context("Pass --root-id or run inside a native Codex root")?;
-            let request = RunRequest {
+            let mut request = RunRequest {
                 runtime,
                 workspace: std::fs::canonicalize(workspace)?,
                 prompt: read_prompt(prompt_file)?,
                 model,
+                effort,
                 access,
                 root_id: None,
                 agent_id: None,
                 agent_path: None,
                 timeout_secs: timeout_seconds,
             };
+            let adapter = CliAdapter::resolve(&home, &request.runtime)?;
+            adapter.normalize_request(&mut request)?;
+            adapter.preflight(&request).await?;
+            let selection = json!({"model":request.model,"effort":request.effort});
+            let native = agent_relay::profiles::native_selection(&home, &request)?;
             provider::Registry::open(&home)?.prepare(&provider::Assignment {
                 root_id: root_id.clone(),
                 agent_path: agent_path.clone(),
                 request,
             })?;
             runner::emit(
-                &json!({"prepared":true,"root_id":root_id,"agent_path":agent_path,"next_step":"spawn or follow up the native agent using its AgentRelay model alias"}),
+                &json!({"prepared":true,"root_id":root_id,"agent_path":agent_path,"selection":selection,"native":native,"next_step":"spawn the returned native role/model, or follow up the existing matching native agent"}),
             )?;
         }
         Command::Run(args) => {
@@ -280,17 +340,19 @@ async fn run(cli: Cli) -> Result<()> {
                     .ok()
                     .filter(|id| Some(id) != root_id.as_ref())
             });
-            let request = RunRequest {
+            let mut request = RunRequest {
                 runtime: args.runtime,
                 workspace,
                 prompt,
                 model: args.model,
+                effort: args.effort,
                 access: args.access,
                 root_id,
                 agent_id,
                 agent_path: args.agent_path,
                 timeout_secs: args.timeout_seconds,
             };
+            adapter.normalize_request(&mut request)?;
             ensure!(
                 request.agent_id.is_none() || request.agent_id != request.root_id,
                 "Native agent ID must be distinct from the root ID"

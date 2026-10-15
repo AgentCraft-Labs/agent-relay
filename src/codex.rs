@@ -22,6 +22,12 @@ struct Receipt {
     hook_command: Option<String>, // Only for removing previously installed handlers.
 }
 
+#[derive(Default, Serialize, Deserialize)]
+struct ProfileReceipt {
+    files: BTreeMap<String, String>,
+    profiles: BTreeMap<String, crate::profiles::Profile>,
+}
+
 fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -258,6 +264,36 @@ pub fn configure(
         model["multi_agent_version"] = json!("v2");
         list.push(model);
     }
+    let profiles = crate::profiles::load(home)?;
+    let profile_receipt_path = codex_home.join("agentrelay-models-install.json");
+    let previous_profiles: ProfileReceipt = if profile_receipt_path.is_file() {
+        serde_json::from_slice(&std::fs::read(&profile_receipt_path)?)?
+    } else {
+        ProfileReceipt::default()
+    };
+    let mut profile_files = BTreeMap::new();
+    for (name, profile) in &profiles {
+        if let Some(previous) = previous_profiles.profiles.get(name) {
+            ensure!(
+                profile == previous,
+                "Native model profile {name} is immutable; add a new profile rather than relabel existing threads"
+            );
+        }
+        list.push(crate::profiles::catalog_entry(&template, name, profile));
+        let relative = format!("agents/{}.toml", crate::profiles::role_name(name));
+        let bytes = crate::profiles::role_document(name, profile)?.into_bytes();
+        let destination = codex_home.join(&relative);
+        if destination.exists() {
+            let current = digest(&std::fs::read(&destination)?);
+            ensure!(
+                current == digest(&bytes)
+                    || previous_profiles.files.get(&relative) == Some(&current),
+                "Refusing to overwrite modified or unrelated native role {}",
+                destination.display()
+            );
+        }
+        profile_files.insert(relative, bytes);
+    }
     std::fs::create_dir_all(codex_home)?;
     let generated = home.join("models.json");
     let config_path = codex_home.join("config.toml");
@@ -295,9 +331,24 @@ pub fn configure(
     }
     atomic_write(&key_path, key.trim().as_bytes(), false)?;
     atomic_write(&generated, &serde_json::to_vec_pretty(&models)?, false)?;
+    for (relative, bytes) in &profile_files {
+        atomic_write(&codex_home.join(relative), bytes, false)?;
+    }
+    let profile_receipt = ProfileReceipt {
+        files: profile_files
+            .into_iter()
+            .map(|(path, bytes)| (path, digest(&bytes)))
+            .collect(),
+        profiles,
+    };
+    atomic_write(
+        &profile_receipt_path,
+        &serde_json::to_vec_pretty(&profile_receipt)?,
+        false,
+    )?;
     atomic_write(&config_path, config.to_string().as_bytes(), false)?;
     crate::runner::emit(
-        &json!({"configured":true,"provider":"agentrelay","new_conversation_required":true,"service_start_required":true,"catalog_refresh":"rerun configure after upstream models change"}),
+        &json!({"configured":true,"provider":"agentrelay","native_model_profiles":profile_receipt.profiles.len(),"new_conversation_required":true,"service_start_required":true,"catalog_refresh":"rerun configure after upstream models change"}),
     )
 }
 

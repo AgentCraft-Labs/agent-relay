@@ -24,6 +24,9 @@ pub struct RuntimeSpec {
     pub version_args: Vec<String>,
     #[serde(default)]
     pub session_resume: bool,
+    /// Custom JSONL drivers must explicitly declare support for effort input.
+    #[serde(default)]
+    pub supports_effort: bool,
 }
 
 fn version_args() -> Vec<String> {
@@ -41,6 +44,7 @@ pub struct Launch {
     pub binary: String,
     pub args: Vec<String>,
     pub stdin: Vec<u8>,
+    pub env_remove: Vec<String>,
 }
 
 /// Driver implementations own command construction and event translation. The
@@ -49,6 +53,7 @@ pub trait RuntimeAdapter: Send {
     fn capabilities(&self) -> Capabilities;
     fn launch(&self, task: &Task) -> Result<Launch>;
     fn decode(&mut self, frame: Value) -> Result<Vec<RuntimeEvent>>;
+    fn validate_observed_model(&self, request: &RunRequest, actual: &str) -> Result<()>;
 }
 
 pub struct CliAdapter {
@@ -76,6 +81,7 @@ impl CliAdapter {
                     resume_args: vec![],
                     version_args: version_args(),
                     session_resume: true,
+                    supports_effort: true,
                 },
                 "codex" => RuntimeSpec {
                     kind: RuntimeKind::Codex,
@@ -85,6 +91,7 @@ impl CliAdapter {
                     resume_args: vec![],
                     version_args: version_args(),
                     session_resume: true,
+                    supports_effort: true,
                 },
                 _ => bail!("Unknown runtime {name}; declare it in {}", file.display()),
             }
@@ -110,7 +117,37 @@ impl CliAdapter {
         ensure!(output.status.success(), "Runtime version probe failed");
         let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         ensure!(version.len() <= 4096, "Unexpectedly large version response");
-        Ok(json!({"binary":self.spec.binary,"version":version,"capabilities":self.capabilities()}))
+        Ok(
+            json!({"binary":self.spec.binary,"version":version,"capabilities":self.capabilities(),"selection":{"model":true,"effort":!matches!(self.spec.kind,RuntimeKind::Jsonl)||self.spec.supports_effort,"effort_observation":false}}),
+        )
+    }
+
+    pub fn normalize_request(&self, request: &mut RunRequest) -> Result<()> {
+        crate::selection::normalize(self.spec.kind, request)?;
+        ensure!(
+            !matches!(self.spec.kind, RuntimeKind::Jsonl)
+                || request.effort.is_none()
+                || self.spec.supports_effort,
+            "Custom runtime must declare supports_effort = true before receiving --effort"
+        );
+        Ok(())
+    }
+
+    /// Local CLI version checks perform no inference and do not probe account credentials.
+    pub async fn preflight(&self, request: &RunRequest) -> Result<()> {
+        let mut request = request.clone();
+        self.normalize_request(&mut request)?;
+        if matches!(self.spec.kind, RuntimeKind::Claude)
+            && let Some(model) = &request.model
+            && crate::selection::minimum_claude_version(model).is_some()
+        {
+            let info = self.probe().await?;
+            crate::selection::check_claude_version(
+                model,
+                info["version"].as_str().context("Missing CLI version")?,
+            )?;
+        }
+        Ok(())
     }
 
     fn claude_decode(&self, frame: Value) -> Result<Vec<RuntimeEvent>> {
@@ -135,6 +172,9 @@ impl CliAdapter {
                 }
             }
             Some("assistant") => {
+                if let Some(model) = frame["message"]["model"].as_str() {
+                    events.push(RuntimeEvent::Model { id: model.into() });
+                }
                 if let Some(blocks) = frame["message"]["content"].as_array() {
                     for block in blocks {
                         if block["type"] == "tool_use" {
@@ -208,7 +248,8 @@ impl RuntimeAdapter for CliAdapter {
     }
 
     fn launch(&self, task: &Task) -> Result<Launch> {
-        let request = &task.request;
+        let mut request = task.request.clone();
+        self.normalize_request(&mut request)?;
         ensure!(
             task.generation == 1 || self.capabilities().session_resume,
             "This runtime does not support session resume"
@@ -268,7 +309,18 @@ impl RuntimeAdapter for CliAdapter {
                     args.extend(["--session-id".into(), uuid::Uuid::new_v4().to_string()]);
                 }
                 if let Some(model) = &request.model {
+                    // A floating alias is pinned to its observed model on resume.
+                    let model = if resume.is_some()
+                        && ["haiku", "sonnet", "opus", "fable"].contains(&model.as_str())
+                    {
+                        task.actual_model.as_ref().unwrap_or(model)
+                    } else {
+                        model
+                    };
                     args.extend(["--model".into(), model.clone()]);
+                }
+                if let Some(effort) = &request.effort {
+                    args.extend(["--effort".into(), effort.clone()]);
                 }
                 // CLI owns its authentication. Bare mode would disable existing OAuth.
                 stdin = request.prompt.as_bytes().to_vec();
@@ -300,6 +352,12 @@ impl RuntimeAdapter for CliAdapter {
                 if let Some(model) = &request.model {
                     args.extend(["--model".into(), model.clone()]);
                 }
+                if let Some(effort) = &request.effort {
+                    args.extend([
+                        "--config".into(),
+                        format!("model_reasoning_effort=\"{effort}\""),
+                    ]);
+                }
                 args.push("-".into());
                 stdin = request.prompt.as_bytes().to_vec();
             }
@@ -313,15 +371,23 @@ impl RuntimeAdapter for CliAdapter {
                             .map(|arg| arg.replace("{session_id}", id)),
                     );
                 }
-                stdin = serde_json::to_vec(
-                    &json!({"protocol_version":1,"task_id":task.id,"generation":task.generation,"prompt":request.prompt,"workspace":request.workspace,"model":request.model,"access":request.access,"resume_session_id":resume}),
-                )?;
+                let mut input = json!({"protocol_version":1,"task_id":task.id,"generation":task.generation,"prompt":request.prompt,"workspace":request.workspace,"model":request.model,"access":request.access,"resume_session_id":resume});
+                if let Some(effort) = &request.effort {
+                    input["effort"] = json!(effort);
+                }
+                stdin = serde_json::to_vec(&input)?;
             }
         }
         Ok(Launch {
             binary: self.spec.binary.clone(),
             args,
             stdin,
+            env_remove: if matches!(self.spec.kind, RuntimeKind::Claude) && request.effort.is_some()
+            {
+                vec!["CLAUDE_CODE_EFFORT_LEVEL".into()]
+            } else {
+                vec![]
+            },
         })
     }
 
@@ -407,5 +473,11 @@ impl RuntimeAdapter for CliAdapter {
                 Ok(vec![event])
             }
         }
+    }
+
+    fn validate_observed_model(&self, request: &RunRequest, actual: &str) -> Result<()> {
+        let mut request = request.clone();
+        self.normalize_request(&mut request)?;
+        crate::selection::validate_observed(self.spec.kind, &request, actual)
     }
 }

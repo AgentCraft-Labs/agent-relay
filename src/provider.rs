@@ -77,6 +77,10 @@ impl Registry {
     }
 
     pub fn prepare(&self, assignment: &Assignment) -> Result<()> {
+        let mut assignment = assignment.clone();
+        CliAdapter::resolve(&self.home, &assignment.request.runtime)?
+            .normalize_request(&mut assignment.request)?;
+        let assignment = &assignment;
         ensure!(
             !assignment.root_id.is_empty(),
             "An actual root session ID is required"
@@ -120,9 +124,23 @@ impl Registry {
             let old: Assignment = serde_json::from_str(&body)?;
             let mut settings = old.request.clone();
             settings.prompt = assignment.request.prompt.clone();
+            let original = serde_json::to_value(settings)?;
+            let updated = serde_json::to_value(&assignment.request)?;
+            let original_fields = original.as_object().context("Invalid request settings")?;
+            let updated_fields = updated.as_object().context("Invalid updated settings")?;
+            let keys = original_fields
+                .keys()
+                .chain(updated_fields.keys())
+                .collect::<std::collections::BTreeSet<_>>();
+            let changed = keys
+                .into_iter()
+                .filter(|key| original.get(*key) != updated.get(*key))
+                .map(|key| key.as_str())
+                .collect::<Vec<_>>();
             ensure!(
-                serde_json::to_value(settings)? == serde_json::to_value(&assignment.request)?,
-                "A follow-up must preserve runtime, workspace, model and access"
+                changed.is_empty(),
+                "A follow-up must preserve execution settings (changed: {}); use a new agent path to change model, effort, workspace or access",
+                changed.join(", ")
             );
             if pending {
                 ensure!(
@@ -226,10 +244,21 @@ impl Registry {
             "This task path is already bound to another native thread"
         );
         let assignment: Assignment = serde_json::from_str(&body)?;
+        let native = crate::profiles::native_selection(&self.home, &assignment.request)?;
         ensure!(
-            request["model"] == format!("agentrelay-{}", assignment.request.runtime),
-            "Model alias does not match prepared runtime"
+            request["model"] == native["model"],
+            "Native model does not match the prepared selection; spawn role {} with model {}",
+            native["role"],
+            native["model"]
         );
+        if native["profile"].is_string()
+            && let Some(effort) = &assignment.request.effort
+        {
+            ensure!(
+                request["reasoning"]["effort"].as_str() == Some(effort.as_str()),
+                "Native effort does not match the pinned external profile; choose its matching role"
+            );
+        }
         if assignment.request.access == Access::WorkspaceWrite {
             ensure!(
                 matches!(
@@ -292,6 +321,24 @@ struct Service {
 
 pub fn task_receipt(prompt: &str) -> String {
     format!("Assigned task (recorded by AgentRelay):\n\n{prompt}")
+}
+
+/// CLI flags prove delivery of effort, not the provider's applied reasoning.
+pub fn execution_details(summary: &Value) -> String {
+    if summary["requested_model"].is_null() && summary["requested_effort"].is_null() {
+        return String::new();
+    }
+    format!(
+        "\n\nExecution settings (recorded by AgentRelay):\nRuntime: {}\nRequested model: {}\nObserved model: {}\nRequested effort: {} (passed to CLI; applied effort is not independently reported)",
+        summary["runtime"].as_str().unwrap_or("unknown"),
+        summary["requested_model"]
+            .as_str()
+            .unwrap_or("runtime default"),
+        summary["model"].as_str().unwrap_or("not reported yet"),
+        summary["requested_effort"]
+            .as_str()
+            .unwrap_or("runtime default")
+    )
 }
 
 pub fn message(text: &str, phase: &str) -> Value {
@@ -420,7 +467,12 @@ async fn respond(state: Arc<Service>, headers: HeaderMap, body: Bytes) -> Result
                 Delivery::Replay(result) => Ok(result),
                 Delivery::Execute { claim, turn } => {
                     let prompt = claim.task.request.prompt.clone();
-                    send(&tx, message(&task_receipt(&prompt), "commentary")).await;
+                    let receipt = format!(
+                        "{}{}",
+                        task_receipt(&prompt),
+                        execution_details(&runner::summary(&claim.task))
+                    );
+                    send(&tx, message(&receipt, "commentary")).await;
                     let store = Store::open(&state.home)?;
                     let adapter = CliAdapter::resolve(&state.home, &claim.task.request.runtime)?;
                     let task_id = claim.task.id.clone();
@@ -446,8 +498,9 @@ async fn respond(state: Arc<Service>, headers: HeaderMap, body: Bytes) -> Result
                 // Repeat the receipt in the final message so Summary views,
                 // which retain only the last assistant item, keep the task too.
                 let final_text = format!(
-                    "{}\n\n---\n\nResult:\n\n{}",
+                    "{}{}\n\n---\n\nResult:\n\n{}",
                     task_receipt(result["prompt"].as_str().unwrap_or_default()),
+                    execution_details(&result["task"]),
                     answer
                 );
                 send(&tx, message(&final_text, "final_answer")).await;
