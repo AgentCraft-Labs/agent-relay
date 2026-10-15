@@ -176,6 +176,53 @@ Selections persist across resumes. Repeat the same flags for native follow-ups; 
 
 Haiku 5.5 requires Claude Code 2.1.293 or later; live acceptance used 2.1.300. See [Claude Code model configuration](https://code.claude.com/docs/en/model-config) and [selection behavior](docs/model-selection.md).
 
+### Example requests to paste into Codex
+
+Replace the task and file names with your own. These examples assume the skill and provider are configured. Claude Code supports selections beyond Haiku; the CLI and your account determine which models are available. The `sonnet` and `opus` aliases select the versions resolved by your Claude Code provider. Use a full model ID when you need a specific version.
+
+Read-only review with Haiku and explicit effort:
+
+```text
+Use $agentrelay to delegate a review of the authentication code to Claude Code
+using Haiku 5.5 with high effort. Create the native agent claude_auth_review.
+Work read-only and report actionable findings with file references.
+```
+
+Architecture analysis with Sonnet:
+
+```text
+Use $agentrelay to delegate an analysis of this project's architecture to
+Claude Code using the sonnet model alias with high effort. Create the native
+agent claude_architecture. Work read-only and propose three concrete improvements.
+```
+
+An implementation task with Opus and permission to edit:
+
+```text
+Use $agentrelay to delegate the fix for the failing login test to Claude Code
+using the opus model alias with high effort. Create the native agent
+claude_login_fix with workspace-write access. Implement the fix, run the
+relevant tests and report the changes and results.
+```
+
+An exact model ID:
+
+```text
+Use $agentrelay to delegate a read-only review of the latest changes to
+Claude Code using model claude-haiku-5-5 with medium effort. Create the native
+agent claude_changes_review and report any regressions you find.
+```
+
+A follow-up on the same worker:
+
+```text
+Use $agentrelay to ask claude_auth_review to explain the highest-priority
+finding and suggest a fix. Reuse the same native agent, Claude session, model,
+effort and read-only access. Prepare the follow-up before sending it.
+```
+
+To switch model or effort, request a new agent with a different name. For a dedicated model label in Codex, register a matching profile as described below before starting the conversation. These examples illustrate supported selection syntax; live acceptance currently covers the explicit Haiku 5.5 high profile.
+
 ### Native model label and effort selector
 
 Register a profile once so Codex receives a real catalog entry and native role for the selection:
