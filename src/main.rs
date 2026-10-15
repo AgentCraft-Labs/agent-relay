@@ -1,0 +1,374 @@
+use agent_relay::{
+    codex,
+    model::*,
+    provider, runner,
+    runtime::{CliAdapter, RuntimeAdapter},
+    store::Store,
+};
+use anyhow::{Context, Result, ensure};
+use clap::{Args, Parser, Subcommand};
+use serde_json::json;
+use std::{io::Read, path::PathBuf, time::Duration};
+
+#[derive(Parser)]
+#[command(
+    name = "agentrelay",
+    version,
+    about = "External CLI runtimes for native Codex agents"
+)]
+struct Cli {
+    /// Private persistent registry directory (or AGENTRELAY_HOME).
+    #[arg(long, global = true)]
+    home: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Serve the local Responses provider; forward normal models to OpenAI.
+    Serve {
+        #[arg(long, default_value = "127.0.0.1:39091")]
+        listen: std::net::SocketAddr,
+    },
+    /// Bind an explicit task to a native root and agent path before spawn/follow-up.
+    Prepare {
+        #[arg(long, default_value = "claude")]
+        runtime: String,
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
+        #[arg(long)]
+        prompt_file: Option<PathBuf>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long, value_enum, default_value = "read-only")]
+        access: Access,
+        #[arg(long, default_value_t = 1800)]
+        timeout_seconds: u64,
+        #[arg(long)]
+        root_id: Option<String>,
+        #[arg(long)]
+        agent_path: String,
+    },
+    /// Execute a new task in this foreground runner. Repeating a key never reruns it.
+    Run(RunArgs),
+    /// Resume an idle external session and consume queued messages in FIFO order.
+    Resume {
+        task: String,
+        #[arg(long)]
+        key: String,
+        #[arg(long)]
+        prompt_file: Option<PathBuf>,
+    },
+    /// Persist a queue-only message; this does not wake an idle runtime.
+    Message {
+        task: String,
+        #[arg(long)]
+        key: String,
+        #[arg(long)]
+        prompt_file: Option<PathBuf>,
+    },
+    /// Request cancellation of the active generation.
+    Interrupt {
+        task: String,
+        #[arg(long, default_value = "User requested interruption")]
+        reason: String,
+    },
+    /// Read one task, including its last external session ID.
+    Show { task: String },
+    /// List tasks, optionally restricted to one native Codex root session.
+    List {
+        #[arg(long)]
+        root: Option<String>,
+    },
+    /// Read durable events after a cursor; optionally wait for new events.
+    Events {
+        task: String,
+        #[arg(long, default_value_t = 0)]
+        after: i64,
+        #[arg(long,default_value_t=0,value_parser=clap::value_parser!(u64).range(0..=30))]
+        wait_seconds: u64,
+    },
+    /// Reconcile expired runners, once or until interrupted. Never launches workers.
+    Watchdog {
+        #[arg(long)]
+        once: bool,
+    },
+    /// Probe a runtime executable and report its actual supported contract.
+    Doctor {
+        #[arg(long, default_value = "claude")]
+        runtime: String,
+    },
+    /// Install skills and roles, configure the provider, or export the integration.
+    Codex {
+        #[command(subcommand)]
+        command: CodexCommand,
+    },
+}
+
+#[derive(Args)]
+struct RunArgs {
+    #[arg(long, default_value = "claude")]
+    runtime: String,
+    #[arg(long, default_value = ".")]
+    workspace: PathBuf,
+    #[arg(long)]
+    key: String,
+    /// Read the task from a file; omit to read stdin. Prompts are never shell expressions.
+    #[arg(long)]
+    prompt_file: Option<PathBuf>,
+    #[arg(long)]
+    model: Option<String>,
+    #[arg(long, value_enum, default_value = "read-only")]
+    access: Access,
+    #[arg(long, default_value_t = 1800)]
+    timeout_seconds: u64,
+    #[arg(long)]
+    root_id: Option<String>,
+    #[arg(long)]
+    agent_id: Option<String>,
+    #[arg(long)]
+    agent_path: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum CodexCommand {
+    /// Install/restart the per-user macOS LaunchAgent for the provider.
+    ServiceInstall {
+        #[arg(long, default_value = "127.0.0.1:39091")]
+        listen: std::net::SocketAddr,
+    },
+    /// Install a self-contained skill and native role, protecting user edits.
+    Install {
+        #[arg(long, required_unless_present = "user", conflicts_with = "user")]
+        project: Option<PathBuf>,
+        #[arg(long)]
+        user: bool,
+    },
+    /// Configure a local provider and augmented model catalog; preserve a backup.
+    Configure {
+        #[arg(long)]
+        codex_home: Option<PathBuf>,
+        #[arg(long)]
+        catalog: Option<PathBuf>,
+        #[arg(long, default_value = "127.0.0.1:39091")]
+        listen: std::net::SocketAddr,
+    },
+    /// Export a self-contained local plugin, including this executable.
+    Export {
+        #[arg(long)]
+        out: PathBuf,
+    },
+}
+
+fn read_prompt(path: Option<PathBuf>) -> Result<String> {
+    let mut text = String::new();
+    if let Some(path) = path {
+        std::fs::File::open(&path)
+            .with_context(|| format!("Cannot open {}", path.display()))?
+            .take((MAX_FRAME + 1) as u64)
+            .read_to_string(&mut text)?;
+    } else {
+        std::io::stdin()
+            .take((MAX_FRAME + 1) as u64)
+            .read_to_string(&mut text)?;
+    }
+    ensure!(
+        !text.trim().is_empty() && text.len() <= MAX_FRAME,
+        "Prompt must contain 1..={MAX_FRAME} bytes"
+    );
+    Ok(text)
+}
+
+fn default_home() -> Result<PathBuf> {
+    if let Some(value) = std::env::var_os("AGENTRELAY_HOME") {
+        return Ok(PathBuf::from(value));
+    }
+    let home = std::env::var_os("HOME").context("Pass --home or set AGENTRELAY_HOME")?;
+    Ok(PathBuf::from(home).join(".local/state/agentrelay"))
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(error) = run(Cli::parse()).await {
+        eprintln!("{}", json!({"error":format!("{error:#}")}));
+        std::process::exit(1);
+    }
+}
+
+async fn run(cli: Cli) -> Result<()> {
+    let home = cli.home.map(Ok).unwrap_or_else(default_home)?;
+    match cli.command {
+        Command::Codex {
+            command: CodexCommand::ServiceInstall { listen },
+        } => return codex::install_service(&home, listen),
+        Command::Codex {
+            command: CodexCommand::Install { project, user },
+        } => return codex::install(&project.unwrap_or(codex::user_root()?), user),
+        Command::Codex {
+            command:
+                CodexCommand::Configure {
+                    codex_home,
+                    catalog,
+                    listen,
+                },
+        } => {
+            let codex_home = codex_home.unwrap_or_else(|| {
+                std::env::var_os("CODEX_HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| codex::user_root().expect("User home").join(".codex"))
+            });
+            return codex::configure(
+                &home,
+                &codex_home,
+                &catalog.unwrap_or_else(|| codex_home.join("models_cache.json")),
+                listen,
+            );
+        }
+        Command::Codex {
+            command: CodexCommand::Export { out },
+        } => return codex::export(&out),
+        _ => {}
+    }
+    let store = Store::open(&home)?;
+    match cli.command {
+        Command::Serve { listen } => provider::serve(&home, listen).await?,
+        Command::Prepare {
+            runtime,
+            workspace,
+            prompt_file,
+            model,
+            access,
+            timeout_seconds,
+            root_id,
+            agent_path,
+        } => {
+            let root_id = root_id
+                .or_else(|| std::env::var("CODEX_SESSION_ID").ok())
+                .context("Pass --root-id or run inside a native Codex root")?;
+            let request = RunRequest {
+                runtime,
+                workspace: std::fs::canonicalize(workspace)?,
+                prompt: read_prompt(prompt_file)?,
+                model,
+                access,
+                root_id: None,
+                agent_id: None,
+                agent_path: None,
+                timeout_secs: timeout_seconds,
+            };
+            provider::Registry::open(&home)?.prepare(&provider::Assignment {
+                root_id: root_id.clone(),
+                agent_path: agent_path.clone(),
+                request,
+            })?;
+            runner::emit(
+                &json!({"prepared":true,"root_id":root_id,"agent_path":agent_path,"next_step":"spawn or follow up the native agent using its AgentRelay model alias"}),
+            )?;
+        }
+        Command::Run(args) => {
+            let workspace =
+                std::fs::canonicalize(args.workspace).context("Workspace must exist")?;
+            ensure!(workspace.is_dir(), "Workspace must be a directory");
+            let prompt = read_prompt(args.prompt_file)?;
+            let adapter = CliAdapter::resolve(&home, &args.runtime)?;
+            let root_id = args
+                .root_id
+                .or_else(|| std::env::var("CODEX_SESSION_ID").ok());
+            let agent_id = args.agent_id.or_else(|| {
+                std::env::var("CODEX_THREAD_ID")
+                    .ok()
+                    .filter(|id| Some(id) != root_id.as_ref())
+            });
+            let request = RunRequest {
+                runtime: args.runtime,
+                workspace,
+                prompt,
+                model: args.model,
+                access: args.access,
+                root_id,
+                agent_id,
+                agent_path: args.agent_path,
+                timeout_secs: args.timeout_seconds,
+            };
+            ensure!(
+                request.agent_id.is_none() || request.agent_id != request.root_id,
+                "Native agent ID must be distinct from the root ID"
+            );
+            let task = runner::execute(&store, store.begin(&args.key, request)?, adapter).await?;
+            ensure!(
+                task.status == Status::Completed || !task.status.terminal(),
+                "Task {} ended as {:?}",
+                task.id,
+                task.status
+            );
+        }
+        Command::Resume {
+            task,
+            key,
+            prompt_file,
+        } => {
+            let previous = store.get(&task)?;
+            let adapter = CliAdapter::resolve(&home, &previous.request.runtime)?;
+            ensure!(
+                adapter.capabilities().session_resume,
+                "Runtime does not support resume"
+            );
+            let prompt = read_prompt(prompt_file)?;
+            let task =
+                runner::execute(&store, store.resume(&task, &key, &prompt)?, adapter).await?;
+            ensure!(
+                task.status == Status::Completed || !task.status.terminal(),
+                "Task {} ended as {:?}",
+                task.id,
+                task.status
+            );
+        }
+        Command::Message {
+            task,
+            key,
+            prompt_file,
+        } => runner::emit(&store.message(&task, &key, &read_prompt(prompt_file)?)?)?,
+        Command::Interrupt { task, reason } => {
+            runner::emit(&runner::summary(&store.interrupt(&task, &reason)?))?
+        }
+        Command::Show { task } => runner::emit(&store.get(&task)?)?,
+        Command::List { root } => runner::emit(&store.list(root.as_deref())?)?,
+        Command::Events {
+            task,
+            after,
+            wait_seconds,
+        } => {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_seconds);
+            loop {
+                let events = store.events(&task, after)?;
+                if !events.is_empty()
+                    || store.get(&task)?.status.terminal()
+                    || tokio::time::Instant::now() >= deadline
+                {
+                    let cursor = events.last().map(|event| event.sequence).unwrap_or(after);
+                    runner::emit(
+                        &json!({"task_id":task,"events":events,"cursor":cursor,"status":store.get(&task)?.status}),
+                    )?;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+        Command::Watchdog { once } => loop {
+            let recovered = store.reconcile(now_ms())?;
+            if once || recovered > 0 {
+                runner::emit(&json!({"reconciled":recovered}))?;
+            }
+            if once {
+                break;
+            }
+            tokio::select! { _=runner::shutdown_signal()=>break, _=tokio::time::sleep(Duration::from_secs(1))=>{} }
+        },
+        Command::Doctor { runtime } => {
+            runner::emit(&CliAdapter::resolve(&home, &runtime)?.probe().await?)?
+        }
+        Command::Codex { .. } => unreachable!("handled before opening the registry"),
+    }
+    Ok(())
+}

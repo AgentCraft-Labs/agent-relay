@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-15",
+  "release": "0.2.0",
+  "official_binary": {
+    "version": "codex-cli 0.162.0-alpha.17.2",
+    "sha256": "50ab38ba21d0d9f8346f32f41848382f15b556190f3c7a07e885a4fb73e379c8",
+    "modified": false
+  },
+  "ordinary_tests": {
+    "passed": 17,
+    "failed": 0,
+    "native_live_tests_ignored_by_default": 10
+  },
+  "native_acceptance": {
+    "passed": 10,
+    "failed": 0,
+    "real_parent": true,
+    "real_claude_cli": true,
+    "extra_codex_child_inference": false,
+    "all_observed_openai_calls_from_root": true,
+    "upstream_statuses": [
+      200,
+      200,
+      200
+    ],
+    "native_child_count": 1,
+    "assignment_and_result_in_child_history": true,
+    "production_provider_followup_same_native_and_external_session": true
+  },
+  "installed_configuration_acceptance": {
+    "passed": true,
+    "normal_user_configuration": true,
+    "isolated_codex_home": false,
+    "parent_provider": "agentrelay",
+    "child_model": "agentrelay-claude",
+    "official_app_read_thread_confirmed": true,
+    "official_app_navigation_succeeded": true,
+    "full_task_and_real_result_recorded": true
+  },
+  "process_checks": {
+    "http_disconnect_cancels_and_reaps_cli": true,
+    "duplicate_turn_replays_without_execution": true,
+    "wrong_root_rejected": true
+  },
+  "quality_checks": {
+    "formatting": "passed",
+    "clippy": "passed"
+  },
+  "limits": {
+    "rendered_desktop_layout_verified": false,
+    "screenshots_produced": false,
+    "desktop_stop_button_verified": false,
+    "strict_os_sandbox_provided": false
+  },
+  "privacy": {
+    "credentials_included": false,
+    "local_user_paths_included": false,
+    "conversation_ids_included": false,
+    "raw_transcripts_included": false
+  }
+}

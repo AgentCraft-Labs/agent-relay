@@ -1,0 +1,16 @@
+/target/
+/dist/
+/.agentrelay/
+/evidence/*
+!/evidence/native-provider-results.json
+*.sqlite*
+/.agents/
+/.codex/
+.DS_Store
+.env
+.env.*
+*.pem
+*.key
+*.log
+auth.json
+credentials.json

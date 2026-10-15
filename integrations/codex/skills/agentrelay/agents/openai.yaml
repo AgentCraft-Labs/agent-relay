@@ -1,0 +1,4 @@
+interface:
+  display_name: "AgentRelay"
+  short_description: "Run external CLIs as native Codex agents"
+  default_prompt: "Use $agentrelay to delegate this task to Claude Code as a native agent, without an intermediate Codex model."

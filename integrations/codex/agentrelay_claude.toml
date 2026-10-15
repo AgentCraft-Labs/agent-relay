@@ -1,0 +1,5 @@
+name = "agentrelay_claude"
+description = "Claude Code executes a prepared task through the AgentRelay provider."
+model = "agentrelay-claude"
+model_reasoning_effort = "low"
+developer_instructions = "Execute the explicitly prepared AgentRelay assignment. The provider supplies the external runtime result."
