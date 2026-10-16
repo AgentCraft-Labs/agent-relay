@@ -4,6 +4,30 @@ Run Claude Code and other agent CLIs as **native agents in the official Codex ap
 
 AgentRelay is a Rust companion with a local Responses provider, CLI adapters, a durable task registry, a user skill and native agent roles. Codex owns the parent/child threads, activity and messaging. The companion fulfills a child's model request using an actual CLI session.
 
+## See it in action: Codex Loves Claude Code ❤️
+
+Keep your conversation in Codex, delegate to Claude Code, and inspect its work in the native agent panel. With AgentRelay installed and configured, paste this into a Codex conversation:
+
+```text
+Use $agentrelay to create a native agent named claude_greeting,
+running Claude Code with Haiku 5.5 and high effort, in read-only mode.
+
+Ask the agent to reply with exactly these two lines:
+Codex Loves Claude Code ❤️
+AgentRelay is fantastic!
+
+Do not modify any files. Wait for the agent to finish.
+```
+
+Open `claude_greeting` in the agent panel to see Claude Code's response:
+
+```text
+Codex Loves Claude Code ❤️
+AgentRelay is fantastic!
+```
+
+This demonstration ran in the official Codex desktop app. The child detail shows the assigned task, the Claude runtime, requested and observed model `claude-haiku-5-5`, requested effort and actual result. Codex can then report that result in the main conversation. Replace the greeting with a code review, architecture analysis or implementation task to use the same delegation flow for real work.
+
 ## How it works
 
 ```mermaid
