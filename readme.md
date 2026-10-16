@@ -75,7 +75,7 @@ sequenceDiagram
 
 ## Download and run on macOS
 
-Download a prebuilt companion from [GitHub Releases](https://github.com/mapo80/agnet-relay/releases/latest). Rust is not required to run it. Choose `macos-arm64` for Apple Silicon or `macos-x86_64` for Intel. The companion is a terminal executable and optional background service; the interface remains the official Codex app.
+Download a prebuilt companion from [GitHub Releases](https://github.com/AgentCraft-Labs/agent-relay/releases/latest). Rust is not required to run it. Choose `macos-arm64` for Apple Silicon or `macos-x86_64` for Intel. The companion is a terminal executable and optional background service; the interface remains the official Codex app.
 
 For version 0.3.1, download and verify the archive in Terminal:
 
@@ -83,7 +83,7 @@ For version 0.3.1, download and verify the archive in Terminal:
 relay_version=0.3.1
 relay_arch=$(uname -m)
 relay_archive="agentrelay-v${relay_version}-macos-${relay_arch}.tar.gz"
-relay_url="https://github.com/mapo80/agnet-relay/releases/download/v${relay_version}"
+relay_url="https://github.com/AgentCraft-Labs/agent-relay/releases/download/v${relay_version}"
 curl --fail --location --remote-name "$relay_url/$relay_archive"
 curl --fail --location --remote-name "$relay_url/$relay_archive.sha256"
 shasum -a 256 -c "$relay_archive.sha256"
