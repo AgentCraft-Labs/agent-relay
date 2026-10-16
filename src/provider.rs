@@ -1,5 +1,6 @@
 //! Local Responses provider. Native Codex threads remain owned by Codex;
 //! only requests explicitly bound to an external runtime execute a CLI.
+use crate::database::Connection;
 use crate::{model::*, runner, runtime::CliAdapter, store::Store};
 use anyhow::{Context, Result, ensure};
 use axum::{
@@ -10,7 +11,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -452,7 +453,8 @@ pub async fn serve(home: &Path, address: SocketAddr) -> Result<()> {
     let recovery = Store::open(home)?;
     let watchdog = tokio::spawn(async move {
         loop {
-            let _ = recovery.reconcile(now_ms());
+            let store = recovery.clone();
+            let _ = tokio::task::spawn_blocking(move || store.reconcile(now_ms())).await;
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
@@ -511,24 +513,49 @@ async fn respond(state: Arc<Service>, headers: HeaderMap, body: Bytes) -> Result
         }
         return Ok(response.body(Body::from_stream(upstream.bytes_stream()))?);
     }
-    let registry = Registry::open(&state.home)?;
-    let delivery = registry.claim(&request)?;
+    let home = state.home.clone();
+    let (registry, delivery) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let registry = Registry::open(&home)?;
+        let delivery = registry.claim(&request)?;
+        Ok((registry, delivery))
+    })
+    .await??;
     let (tx, rx) = mpsc::channel(8);
-    tokio::spawn(async move {
-        let id = uuid::Uuid::new_v4().to_string();
-        if !send(&tx, json!({"type":"response.created","response":{"id":id}})).await {
-            if let Delivery::Execute { claim, .. } = &delivery {
-                let store = Store::open(&state.home).expect("Existing registry");
-                let _ = store.finish(
-                    claim,
-                    Status::Interrupted,
-                    None,
-                    Some("Client disconnected before startup".into()),
-                );
-            }
-            return;
+    // Isolate synchronous database/VFS work and process inspection from the
+    // HTTP reactor. A slow worker must not stall normal OpenAI chats or health.
+    tokio::task::spawn_blocking(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Native worker runtime");
+        runtime.block_on(deliver_native(state, registry, delivery, tx));
+    });
+    Ok(Response::builder()
+        .header("content-type", "text/event-stream")
+        .header("cache-control", "no-cache")
+        .body(Body::from_stream(ReceiverStream::new(rx)))?)
+}
+
+async fn deliver_native(
+    state: Arc<Service>,
+    registry: Registry,
+    delivery: Delivery,
+    tx: mpsc::Sender<Result<Bytes, Infallible>>,
+) {
+    let id = uuid::Uuid::new_v4().to_string();
+    if !send(&tx, json!({"type":"response.created","response":{"id":id}})).await {
+        if let Delivery::Execute { claim, .. } = &delivery {
+            let store = Store::open(&state.home).expect("Existing registry");
+            let _ = store.finish(
+                claim,
+                Status::Interrupted,
+                None,
+                Some("Client disconnected before startup".into()),
+            );
         }
-        let outcome: Result<Value> = async {
+        return;
+    }
+    let outcome: Result<Value> = async {
             match delivery {
                 Delivery::Replay(result) => Ok(result),
                 Delivery::Execute { claim, turn } => {
@@ -574,36 +601,31 @@ async fn respond(state: Arc<Service>, headers: HeaderMap, body: Bytes) -> Result
             }
         }
         .await;
-        match outcome {
-            Ok(result) if result["task"]["status"] == "completed" => {
-                let answer = result["task"]["result"].as_str().unwrap_or_default();
-                // Repeat the receipt in the final message so Summary views,
-                // which retain only the last assistant item, keep the task too.
-                let final_text = format!(
-                    "{}{}\n\n---\n\nResult:\n\n{}",
-                    task_receipt(result["prompt"].as_str().unwrap_or_default()),
-                    execution_details(&result["task"]),
-                    answer
-                );
-                send(&tx, message(&final_text, "final_answer")).await;
-                // CLI billing remains in the registry. No fabricated OpenAI usage.
-                send(
-                    &tx,
-                    json!({"type":"response.completed","response":{"id":id}}),
-                )
-                .await;
-            }
-            outcome => {
-                let error = match outcome {
-                    Ok(result) => result["task"].to_string(),
-                    Err(error) => format!("{error:#}"),
-                };
-                send(&tx,json!({"type":"response.failed","response":{"id":id,"error":{"code":"agentrelay_runtime_error","message":error}}})).await;
-            }
+    match outcome {
+        Ok(result) if result["task"]["status"] == "completed" => {
+            let answer = result["task"]["result"].as_str().unwrap_or_default();
+            // Repeat the receipt in the final message so Summary views,
+            // which retain only the last assistant item, keep the task too.
+            let final_text = format!(
+                "{}{}\n\n---\n\nResult:\n\n{}",
+                task_receipt(result["prompt"].as_str().unwrap_or_default()),
+                execution_details(&result["task"]),
+                answer
+            );
+            send(&tx, message(&final_text, "final_answer")).await;
+            // CLI billing remains in the registry. No fabricated OpenAI usage.
+            send(
+                &tx,
+                json!({"type":"response.completed","response":{"id":id}}),
+            )
+            .await;
         }
-    });
-    Ok(Response::builder()
-        .header("content-type", "text/event-stream")
-        .header("cache-control", "no-cache")
-        .body(Body::from_stream(ReceiverStream::new(rx)))?)
+        outcome => {
+            let error = match outcome {
+                Ok(result) => result["task"].to_string(),
+                Err(error) => format!("{error:#}"),
+            };
+            send(&tx,json!({"type":"response.failed","response":{"id":id,"error":{"code":"agentrelay_runtime_error","message":error}}})).await;
+        }
+    }
 }

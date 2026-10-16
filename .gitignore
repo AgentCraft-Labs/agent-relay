@@ -4,6 +4,7 @@
 /evidence/*
 !/evidence/native-provider-results.json
 !/evidence/service-recovery-results.json
+!/evidence/provider-availability-results.json
 *.sqlite*
 /.agents/
 /.codex/

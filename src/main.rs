@@ -245,7 +245,7 @@ async fn run(cli: Cli) -> Result<()> {
         } => return codex::install_service(&home, listen),
         Command::Codex {
             command: CodexCommand::ServiceEnsure { listen },
-        } => return agent_relay::service::ensure_service(&codex::user_root()?, listen),
+        } => return agent_relay::service::ensure_service(&codex::user_root()?, &home, listen),
         Command::Codex {
             command: CodexCommand::Install { project, user },
         } => return codex::install(&project.unwrap_or(codex::user_root()?), user),

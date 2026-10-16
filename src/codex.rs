@@ -490,7 +490,9 @@ pub fn install_service(home: &Path, address: SocketAddr) -> Result<()> {
         &destination,
         &format!("{domain}/com.agentrelay.provider"),
     )?;
-    crate::service::ensure_service(&root, address)?;
+    // Startup is a readiness wait, not evidence of an existing process hang.
+    // launchd can throttle a recently replaced job for about ten seconds.
+    crate::service::wait_ready(address, std::time::Duration::from_secs(30))?;
     crate::runner::emit(
         &json!({"service_installed":true,"label":"com.agentrelay.provider","listen":address,"guardian_installed":true,"recovery_interval_seconds":crate::service::CHECK_INTERVAL_SECONDS}),
     )

@@ -35,3 +35,5 @@ For an update, run the new archive's executable with `codex upgrade --wait-idle`
 This distribution provides the command-line companion/background service, without a separate GUI or a modification to Codex. Apple Developer ID signing and notarization are not configured. Users approve any macOS execution prompt through normal system controls; no protection bypass is part of the installer.
 
 Version 0.3.3 also installs an independent macOS guardian before restarting the provider. The guardian restores missing launchd registrations every 10 seconds; a healthy provider is not restarted. `codex service-ensure` performs the same recovery immediately. See the README before intentionally disabling either service.
+
+Version 0.3.4 extends the guardian to verified process hangs and isolates serialized database/native-worker execution from parent HTTP handling. Recovery preserves persistent sessions but can interrupt a turn; follow-up remains explicit.

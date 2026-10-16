@@ -1,6 +1,7 @@
+use crate::database::Connection;
 use crate::model::*;
 use anyhow::{Context, Result, bail, ensure};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -55,7 +56,8 @@ impl Store {
     }
 
     pub fn get(&self, id: &str) -> Result<Task> {
-        read_task(&self.conn()?, id)
+        let conn = self.conn()?;
+        read_task(&conn, id)
     }
 
     pub fn list(&self, root: Option<&str>) -> Result<Vec<Task>> {
@@ -215,7 +217,7 @@ impl Store {
         })
     }
 
-    fn list_active_in(&self, conn: &Connection) -> Result<usize> {
+    fn list_active_in(&self, conn: &rusqlite::Connection) -> Result<usize> {
         let mut stmt = conn.prepare("SELECT body FROM tasks")?;
         let mut count = 0;
         for body in stmt.query_map([], |row| row.get::<_, String>(0))? {
@@ -470,7 +472,7 @@ fn fingerprint(value: &impl serde::Serialize) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(value)?)))
 }
 
-fn read_task(conn: &Connection, id: &str) -> Result<Task> {
+fn read_task(conn: &rusqlite::Connection, id: &str) -> Result<Task> {
     let body: Option<String> = conn
         .query_row("SELECT body FROM tasks WHERE id=?1", [id], |row| row.get(0))
         .optional()?;
@@ -478,7 +480,7 @@ fn read_task(conn: &Connection, id: &str) -> Result<Task> {
         .context("Invalid registry task")
 }
 
-fn checked_task(conn: &Connection, claim: &Claim) -> Result<Task> {
+fn checked_task(conn: &rusqlite::Connection, claim: &Claim) -> Result<Task> {
     let task = read_task(conn, &claim.task.id)?;
     let token: String =
         conn.query_row("SELECT token FROM tasks WHERE id=?1", [&task.id], |row| {
@@ -491,7 +493,7 @@ fn checked_task(conn: &Connection, claim: &Claim) -> Result<Task> {
     Ok(task)
 }
 
-fn write_task(conn: &Connection, task: &mut Task) -> Result<()> {
+fn write_task(conn: &rusqlite::Connection, task: &mut Task) -> Result<()> {
     task.updated_at = now_ms();
     conn.execute(
         "UPDATE tasks SET body=?2 WHERE id=?1",
@@ -500,7 +502,11 @@ fn write_task(conn: &Connection, task: &mut Task) -> Result<()> {
     Ok(())
 }
 
-fn existing_operation(conn: &Connection, id: &str, fingerprint: &str) -> Result<Option<Task>> {
+fn existing_operation(
+    conn: &rusqlite::Connection,
+    id: &str,
+    fingerprint: &str,
+) -> Result<Option<Task>> {
     let existing = conn
         .query_row(
             "SELECT fingerprint,task_id FROM operations WHERE id=?1",
@@ -517,7 +523,12 @@ fn existing_operation(conn: &Connection, id: &str, fingerprint: &str) -> Result<
     Ok(None)
 }
 
-fn save_operation(conn: &Connection, id: &str, fingerprint: &str, task_id: &str) -> Result<()> {
+fn save_operation(
+    conn: &rusqlite::Connection,
+    id: &str,
+    fingerprint: &str,
+    task_id: &str,
+) -> Result<()> {
     conn.execute(
         "INSERT INTO operations(id,fingerprint,task_id) VALUES(?1,?2,?3)",
         params![id, fingerprint, task_id],
@@ -525,7 +536,12 @@ fn save_operation(conn: &Connection, id: &str, fingerprint: &str, task_id: &str)
     Ok(())
 }
 
-fn append_event(conn: &Connection, task: &Task, kind: &str, data: Value) -> Result<Event> {
+fn append_event(
+    conn: &rusqlite::Connection,
+    task: &Task,
+    kind: &str,
+    data: Value,
+) -> Result<Event> {
     let encoded = serde_json::to_string(&data)?;
     ensure!(
         encoded.len() <= MAX_FRAME,

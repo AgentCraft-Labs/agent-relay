@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-16",
+  "release": "0.3.4",
+  "observed_failure": {
+    "provider_registered": true,
+    "listener_present": true,
+    "health_timed_out": true,
+    "sqlite_open_close_mutex_waits_in_async_workers": true,
+    "reconstructed_executable_text_matches_installed_binary": true,
+    "matching_text_sha256": "f3f6b2754240af799a7aef1c113695c8e768d875c5ecfab8632774c21c58a242"
+  },
+  "ordinary_tests": {
+    "passed": 40,
+    "failed": 0,
+    "platform": "macOS"
+  },
+  "regressions": {
+    "sqlite_connection_lifetimes_serialized_with_nested_transactions": true,
+    "eight_threads_completed_400_nested_transactions": true,
+    "http_health_and_auth_rejection_remain_available_while_database_is_blocked": true,
+    "healthy_provider_not_restarted": true,
+    "repeated_failures_require_same_pid_and_start_time": true,
+    "duplicate_and_stale_failure_checks_do_not_accumulate": true,
+    "cold_start_readiness_does_not_count_as_an_existing_hang": true,
+    "installer_readiness_waits_through_launchd_startup_throttling": true
+  },
+  "isolated_macos_hang_recovery": {
+    "passed": true,
+    "fault": "SIGSTOP of isolated fixture provider",
+    "failure_checks_before_restart": 3,
+    "first_two_checks_preserved_original_process": true,
+    "recovered_seconds": 28.19,
+    "recovery_created_new_healthy_process": true,
+    "user_provider_not_frozen_for_the_test": true,
+    "fixture_service_removed_after_test": true
+  },
+  "native_opus_high_followup": {
+    "passed": 1,
+    "failed": 0,
+    "real_claude_cli": true,
+    "same_native_and_external_session": true,
+    "observed_model": "claude-opus-5-5",
+    "requested_effort": "high",
+    "applied_effort_independently_reported": false
+  },
+  "existing_desktop_chat": {
+    "activity_resumed_after_manual_recovery": true,
+    "screenshot_claimed": false
+  },
+  "limitations": [
+    "A forced provider restart can interrupt an active external turn; follow-up remains explicit",
+    "macOS scheduling and upstream availability are outside the recovery guarantee"
+  ],
+  "checks": {
+    "formatting": true,
+    "clippy_all_targets_warnings_denied": true,
+    "release_build": true
+  },
+  "installed_configuration": {
+    "version": "0.3.4",
+    "upgrade_completed": true,
+    "authenticated_openai_parent_smoke": true,
+    "packaged_arm64_binary_and_checksum": true
+  }
+}

@@ -1,5 +1,6 @@
 pub mod catalog;
 pub mod codex;
+mod database;
 pub mod model;
 pub mod profiles;
 pub mod provider;

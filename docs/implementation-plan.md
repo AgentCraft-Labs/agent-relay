@@ -20,6 +20,8 @@
 
 16. Recover missing macOS provider registrations with an independent periodic guardian; write service files before unload and verify a real unload/recovery plus authenticated parent inference.
 
+17. Recover registered but unresponsive providers after verified repeated failures; serialize SQLite VFS access and isolate database/native execution from the parent HTTP reactor.
+
 ## Release checks
 
 Run formatting, all ordinary tests and clippy. Explicitly run the ignored native acceptance suite only when authorized to consume external model usage. Keep raw transcripts, account configuration and session registries private. Validate the installed skill with the system skill validator and discovery from unrelated projects.

@@ -77,10 +77,10 @@ sequenceDiagram
 
 Download a prebuilt companion from [GitHub Releases](https://github.com/AgentCraft-Labs/agent-relay/releases/latest). Rust is not required to run it. Choose `macos-arm64` for Apple Silicon or `macos-x86_64` for Intel. The companion is a terminal executable and optional background service; the interface remains the official Codex app.
 
-For version 0.3.3, download and verify the archive in Terminal:
+For version 0.3.4, download and verify the archive in Terminal:
 
 ```bash
-relay_version=0.3.3
+relay_version=0.3.4
 relay_arch=$(uname -m)
 relay_archive="agentrelay-v${relay_version}-macos-${relay_arch}.tar.gz"
 relay_url="https://github.com/AgentCraft-Labs/agent-relay/releases/download/v${relay_version}"
@@ -144,12 +144,15 @@ flowchart LR
     Launchd[macOS launchd] -->|KeepAlive after process exit| Provider[AgentRelay provider]
     Guardian[Periodic guardian] -->|Every 10 seconds: health and registration| Provider
     Guardian -->|Registration missing: bootstrap| Launchd
+    Guardian -->|Verified repeated timeout: restart PID| Provider
     Codex[Official Codex app] --> Provider
     Provider --> OpenAI[OpenAI parent model]
     Provider --> CLI[Prepared external CLI agent]
 ```
 
-`KeepAlive` covers process exits. The guardian also covers a provider removed with `launchctl bootout`, which `KeepAlive` alone cannot repair. A healthy provider is left running. Recovery does not kill running workers, change task bindings, rewrite chat history, consume model tokens or silently substitute another model. Healthy checks are silent; recovery and errors go to `~/.local/state/agentrelay/guardian.log` and `guardian.err`.
+`KeepAlive` covers process exits. The guardian also covers a provider removed with `launchctl bootout`, which `KeepAlive` alone cannot repair. A healthy provider is left running. Version 0.3.4 also recovers registered hangs. A healthy provider and its workers are left intact. After three failed checks of the same verified process, separated by at least 10 seconds, the guardian checks again and restarts an unresponsive provider. It verifies the registered PID, executable path and process start time first. A forced restart can interrupt active CLI turns; persisted external session IDs and bindings remain available for an explicit follow-up. Recovery does not rewrite chat history, consume model tokens, silently substitute another model or automatically repeat a task. Healthy checks are silent; recovery and errors go to `~/.local/state/agentrelay/guardian.log` and `guardian.err`.
+
+SQLite connection lifetimes are serialized inside the provider, including nested native/task transactions. Registry work and external workers run outside the main HTTP executor, so database contention does not stall ordinary OpenAI routing or health checks.
 
 For an immediate manual recovery, without restarting a healthy service:
 
@@ -158,7 +161,7 @@ For an immediate manual recovery, without restarting a healthy service:
 curl --fail http://127.0.0.1:39091/version
 ```
 
-Installation writes service files before unloading the provider, then registers the guardian before restarting the provider. An interrupted installer can therefore be repaired on the next guardian check. Recovery normally takes the next scheduled check plus service startup; macOS scheduling, permissions and occupied ports can delay or prevent recovery. A registered but unresponsive process is reported without forcibly killing its workers. This does not guarantee Internet or upstream availability.
+Installation writes service files before unloading the provider, then registers the guardian before restarting the provider. An interrupted installer can therefore be repaired on the next guardian check. Recovery normally takes the next scheduled check plus service startup; macOS scheduling, permissions and occupied ports can delay or prevent recovery. Health failures are counted per process and cleared after a successful check; a replaced PID/start time resets the count. Checks use an exclusive lock to prevent concurrent recovery commands. This does not guarantee Internet or upstream availability.
 
 To intentionally stop the background integration, first finish or interrupt external tasks, then unload **the guardian first** and the provider second:
 
