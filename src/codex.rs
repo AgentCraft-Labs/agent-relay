@@ -351,6 +351,76 @@ pub fn user_root() -> Result<PathBuf> {
     ))
 }
 
+/// Apply the user integration only between external turns. Existing workers
+/// keep their frozen native binding; an active CLI is never restarted here.
+#[cfg(target_os = "macos")]
+pub async fn upgrade(home: &Path, wait_idle: bool, address: SocketAddr) -> Result<()> {
+    let store = crate::store::Store::open(home)?;
+    let mut announced = false;
+    loop {
+        let active = store
+            .list(None)?
+            .iter()
+            .filter(|t| !t.status.terminal())
+            .count();
+        if active == 0 {
+            break;
+        }
+        ensure!(
+            wait_idle,
+            "Active workers are running; use codex upgrade --wait-idle or retry when they finish"
+        );
+        if !announced {
+            crate::runner::emit(
+                &json!({"upgrade_waiting_for_idle":true,"active_workers":active,"provider_restarted":false}),
+            )?;
+            announced = true;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
+            _ = crate::runner::shutdown_signal() => anyhow::bail!("Upgrade cancelled; provider left running"),
+        }
+    }
+    let root = user_root()?;
+    let codex_home = std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join(".codex"));
+    // Migrate old bindings while their old model profiles are still intact.
+    crate::provider::Registry::open(home)?;
+    install(&root, true)?;
+    crate::profiles::install_defaults(home)?;
+    configure(
+        home,
+        &codex_home,
+        &codex_home.join("models_cache.json"),
+        address,
+    )?;
+    install_service(home, address)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(1))
+        .build()?;
+    for _ in 0..40 {
+        if let Ok(response) = client.get(format!("http://{address}/version")).send().await
+            && let Ok(body) = response.bytes().await
+            && let Ok(version) = serde_json::from_slice::<Value>(&body)
+            && version["version"] == env!("CARGO_PKG_VERSION")
+        {
+            return crate::runner::emit(
+                &json!({"upgrade_applied":true,"version":env!("CARGO_PKG_VERSION"),"new_conversation_required":true}),
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    anyhow::bail!("Provider did not report the updated version; inspect the local service log")
+}
+
+#[cfg(not(target_os = "macos"))]
+pub async fn upgrade(_home: &Path, _wait_idle: bool, _address: SocketAddr) -> Result<()> {
+    anyhow::bail!(
+        "Automatic upgrades are supported on macOS; update the configured service manager on this platform"
+    )
+}
+
 #[cfg(target_os = "macos")]
 pub fn install_service(home: &Path, address: SocketAddr) -> Result<()> {
     ensure!(address.ip().is_loopback(), "Only loopback is allowed");
@@ -407,11 +477,21 @@ pub fn install_service(home: &Path, address: SocketAddr) -> Result<()> {
         .args(["bootout", &format!("{domain}/com.agentrelay.provider")])
         .output()?;
     atomic_write(&destination, plist.as_bytes(), false)?;
-    let output = std::process::Command::new("/bin/launchctl")
-        .arg("bootstrap")
-        .arg(&domain)
+    // bootout can return before launchd has released the old registration.
+    let mut output = std::process::Command::new("/bin/launchctl")
+        .args(["bootstrap", &domain])
         .arg(&destination)
         .output()?;
+    for attempt in 0..5 {
+        if output.status.success() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100 << attempt));
+        output = std::process::Command::new("/bin/launchctl")
+            .args(["bootstrap", &domain])
+            .arg(&destination)
+            .output()?;
+    }
     ensure!(
         output.status.success(),
         "launchctl bootstrap failed: {}",

@@ -1,6 +1,6 @@
 # macOS release automation
 
-`.github/workflows/release-macos.yml` builds and publishes the Rust companion when a version tag such as `v0.3.1` is pushed. It also supports manual dispatch with an existing version tag. The tag's Cargo package version must match, and every build job checks out the same resolved commit.
+`.github/workflows/release-macos.yml` builds and publishes the Rust companion when a version tag such as `v0.3.2` is pushed. It also supports manual dispatch with an existing version tag. The tag's Cargo package version must match, and every build job checks out the same resolved commit.
 
 The matrix uses native Apple Silicon (`macos-15`, `aarch64-apple-darwin`) and Intel (`macos-15-intel`, `x86_64-apple-darwin`) runners. Each job runs formatting, ordinary tests and clippy, builds with Cargo.lock, packages its exact binary, checks its Mach-O architecture, and smoke-tests the executable extracted from the resulting archive. Live model tests remain opt-in and do not run in release CI.
 
@@ -20,8 +20,8 @@ Build jobs have read-only repository permissions. Only the final publish job rec
 Update Cargo.toml/Cargo.lock, the documented download version and release notes, then commit and push. Create the matching tag:
 
 ```bash
-git tag v0.3.1
-git push origin v0.3.1
+git tag v0.3.2
+git push origin v0.3.2
 ```
 
 The workflow creates the release; no local binary upload is required. Alternatively run the workflow manually with the same tag after it exists. Follow the Actions run and confirm the release assets/checksums before distributing the download link.
@@ -30,6 +30,6 @@ The workflow creates the release; no local binary upload is required. Alternativ
 
 Download the archive for the machine's architecture, verify its SHA-256 file, and extract it. Run `./agentrelay codex install --user`, then use the copied user executable to register any profiles, configure Codex and install the LaunchAgent. The [README](../readme.md#download-and-run-on-macos) contains complete commands. No Rust toolchain is needed by users.
 
-For an update, end active tasks, install the new archive's executable through `codex install --user`, rerun `codex configure` when the catalog/profile configuration changes, and run `codex service-install` to restart the owned service. User-edited files are protected and registries are preserved. New Codex conversations reload the configured provider/roles; restart the app if its catalog remains cached.
+For an update, run the new archive's executable with `codex upgrade --wait-idle`. It waits for active external turns, migrates native bindings before adding profiles, installs the user integration/default profiles, configures the catalog and restarts the owned service. Without `--wait-idle`, an active worker causes an explicit error before installation changes. User-edited files are protected and registries are preserved. New Codex conversations reload the configured provider/roles; restart the app if its catalog remains cached. The `/version` endpoint reports the running provider version and heartbeat interval.
 
 This distribution provides the command-line companion/background service, without a separate GUI or a modification to Codex. Apple Developer ID signing and notarization are not configured. Users approve any macOS execution prompt through normal system controls; no protection bypass is part of the installer.

@@ -77,10 +77,10 @@ sequenceDiagram
 
 Download a prebuilt companion from [GitHub Releases](https://github.com/AgentCraft-Labs/agent-relay/releases/latest). Rust is not required to run it. Choose `macos-arm64` for Apple Silicon or `macos-x86_64` for Intel. The companion is a terminal executable and optional background service; the interface remains the official Codex app.
 
-For version 0.3.1, download and verify the archive in Terminal:
+For version 0.3.2, download and verify the archive in Terminal:
 
 ```bash
-relay_version=0.3.1
+relay_version=0.3.2
 relay_arch=$(uname -m)
 relay_archive="agentrelay-v${relay_version}-macos-${relay_arch}.tar.gz"
 relay_url="https://github.com/AgentCraft-Labs/agent-relay/releases/download/v${relay_version}"
@@ -97,15 +97,13 @@ The release also provides combined `SHA256SUMS`. These hashes verify download in
 Install/authenticate Claude Code separately, and open/login to Codex once so it has a current model cache. Then install the companion for all local projects of your user:
 
 ```bash
-./agentrelay codex install --user
+./agentrelay codex upgrade --wait-idle
 relay_command="$HOME/.agents/skills/agentrelay/scripts/agentrelay"
-"$relay_command" profile add haiku55_high --runtime claude \
-  --model "Haiku 5.5" --effort high --display-name "Claude Haiku 5.5"
-"$relay_command" codex configure
-"$relay_command" codex service-install
 ```
 
 Start a new Codex conversation using the `agentrelay` provider; restart Codex if it retains the previous catalog. Ask to use `$agentrelay` with Haiku 5.5 high. The native profile exposes the corresponding model name and effort through Codex's catalog/thread settings.
+
+`codex upgrade --wait-idle` installs the user skill, registers **Haiku 5.5 high, Sonnet 5.5 high and Opus 5.5 high**, configures their hidden native roles/catalog entries and starts the macOS service. During an update it waits for active external turns to finish, then applies the upgrade. Existing workers keep their native routing and external sessions; a new profile does not relabel an already-created agent. No CLI model inference is needed for installation.
 
 To run in the foreground instead of installing the background service, use `"$relay_command" serve`. Use one service instance on the configured port. To stop the macOS service, first finish or interrupt active tasks, then run `launchctl bootout gui/$(id -u)/com.agentrelay.provider`. Provider routing depends on the running service; restore the original provider settings when disabling it permanently.
 
@@ -202,7 +200,7 @@ Haiku 5.5 requires Claude Code 2.1.293 or later; live acceptance used 2.1.300. S
 
 ### Example requests to paste into Codex
 
-Replace the task and file names with your own. These examples assume the skill and provider are configured. Claude Code supports selections beyond Haiku; the CLI and your account determine which models are available. The `sonnet` and `opus` aliases select the versions resolved by your Claude Code provider. Use a full model ID when you need a specific version.
+Replace the task and file names with your own. These examples assume the skill and provider are configured. Claude Code supports selections beyond Haiku; the CLI and your account determine which models are available. The three high-effort examples use the default versioned profiles. Other model IDs, aliases or efforts need their own matching native profile.
 
 Read-only review with Haiku and explicit effort:
 
@@ -216,7 +214,7 @@ Architecture analysis with Sonnet:
 
 ```text
 Use $agentrelay to delegate an analysis of this project's architecture to
-Claude Code using the sonnet model alias with high effort. Create the native
+Claude Code using Sonnet 5.5 with high effort. Create the native
 agent claude_architecture. Work read-only and propose three concrete improvements.
 ```
 
@@ -224,12 +222,12 @@ An implementation task with Opus and permission to edit:
 
 ```text
 Use $agentrelay to delegate the fix for the failing login test to Claude Code
-using the opus model alias with high effort. Create the native agent
+using Opus 5.5 with high effort. Create the native agent
 claude_login_fix with workspace-write access. Implement the fix, run the
 relevant tests and report the changes and results.
 ```
 
-An exact model ID:
+An exact model ID (register a matching Haiku 5.5 medium profile first):
 
 ```text
 Use $agentrelay to delegate a read-only review of the latest changes to
@@ -245,7 +243,7 @@ finding and suggest a fix. Reuse the same native agent, Claude session, model,
 effort and read-only access. Prepare the follow-up before sending it.
 ```
 
-To switch model or effort, request a new agent with a different name. For a dedicated model label in Codex, register a matching profile as described below before starting the conversation. These examples illustrate supported selection syntax; live acceptance currently covers the explicit Haiku 5.5 high profile.
+To switch model or effort, request a new agent with a different name. Explicit selections require a matching native profile configured before starting the conversation; preparation reports a setup error instead of silently using a generic low/Light label. The default installation includes the three high-effort profiles above. Add a separate profile for other efforts or model IDs. Live acceptance covers Haiku 5.5 high and Opus 5.5 high.
 
 ### Native model label and effort selector
 
@@ -270,7 +268,9 @@ flowchart LR
     Runner --> Check[Observed model validation]
 ```
 
-Profiles are immutable: changing model, effort or label needs a new profile and agent. A different native picker setting is rejected when it disagrees with the prepared profile; changing the picker alone does not rewrite the external task. Generic runtime aliases remain available when no profile matches. `profile list` shows registered selections. Native catalog/thread fields are tested; the rendered top-right widget remains subject to the desktop visual-verification limitation below.
+Profiles are immutable: changing model, effort or label needs a new profile and agent. A different native picker setting is rejected when it disagrees with the prepared profile; changing the picker alone does not rewrite the external task. Generic runtime aliases remain available for runtime defaults and preserved legacy workers. `profile list` shows registered selections. Native catalog/thread fields are tested; the rendered top-right widget remains subject to the desktop visual-verification limitation below.
+
+The native selection is also pinned to each prepared worker. Existing generic workers retain that legacy label on resume, even after a dedicated profile is installed. Create a new agent to use the new profile and its high native effort. Codex may render the internal profile ID in the header (for example `agentrelay-profile-opus55_high`); AgentRelay supplies the friendly display name and matching effort through the native catalog/thread fields.
 
 AgentRelay runtime aliases and profiles are **hidden from the main conversation's model picker**. They remain registered for explicit native-agent delegation and model metadata lookup, with their names and effort preserved. They do not carry OpenAI's new-model announcements or upgrade recommendations. To refresh an older installation, run `codex configure` with the updated AgentRelay binary, then fully quit and reopen Codex so it reloads the catalog. Hiding a model is a presentation setting, not an access restriction; explicit model IDs still resolve.
 
@@ -281,6 +281,8 @@ The child conversation records **the complete assigned task and the actual exter
 This is an honestly labeled assignment receipt, not a fabricated user-message bubble or a second model response. The provider adds it without inference. Claude's individual tool calls are stored in AgentRelay events; they are not rendered as native Codex tool cards.
 
 The official app-server test confirms both messages in native child history. Rendered desktop layout has not been visually verified; see [verification](docs/verification.md).
+
+The initial receipt records startup state, so its observed-model field may still be unavailable. The final result records the CLI's observed model. During quiet CLI execution the provider sends a real `response.in_progress` event every 15 seconds, preventing Codex's idle-stream timeout without inventing assistant text or token usage. A client disconnect still cancels and reaps the worker; a deliberate stop is not masked by keepalive events.
 
 ### Follow-ups and cancellation
 

@@ -185,7 +185,10 @@ fn serve(mut stream: TcpStream, state: &State) -> Result<()> {
         stream.flush()?;
         return Ok(());
     }
-    if (request["model"] == CHILD || request["model"] == "agentrelay-profile-haiku55_high")
+    if (request["model"] == CHILD
+        || request["model"]
+            .as_str()
+            .is_some_and(|model| model.starts_with("agentrelay-profile-")))
         && let Some(gateway) = &state.gateway
     {
         let response = reqwest::blocking::Client::new()
@@ -531,7 +534,8 @@ fn prepare_production(workspace: &Path, root: &str, prompt: &str) -> Result<()> 
         root_id: root.into(),
         agent_path: "/root/claude_worker".into(),
         request,
-    })
+    })?;
+    Ok(())
 }
 
 async fn probe(
@@ -593,8 +597,8 @@ async fn probe(
         claude_calls: AtomicUsize::new(0),
         route_claude,
         plaintext,
-        role: if name == "product-haiku-high" {
-            "agentrelay_profile_haiku55_high".into()
+        role: if let Some(family) = profile_family(name) {
+            format!("agentrelay_profile_{family}55_high")
         } else {
             "claude_direct".into()
         },
@@ -605,7 +609,7 @@ async fn probe(
         relay_task: Mutex::new(None),
         followup: matches!(
             name,
-            "prepared-followup" | "product-followup" | "product-haiku-high"
+            "prepared-followup" | "product-followup" | "product-haiku-high" | "product-opus-high"
         ),
         live_parent,
         forward_statuses: Mutex::new(Vec::new()),
@@ -614,15 +618,16 @@ async fn probe(
     let server = Server::start(create_state())?;
     let alternate = Server::start(create_state())?;
     let mut catalog = models(&root_model)?;
-    if name == "product-haiku-high" {
+    if let Some(family) = profile_family(name) {
+        let profile_name = format!("{family}55_high");
         let profile = agent_relay::profiles::add(
             &workspace.join("relay-state"),
-            "haiku55_high",
+            &profile_name,
             agent_relay::profiles::Profile {
                 runtime: "claude".into(),
-                model: "Haiku 5.5".into(),
+                model: format!("{family} 5.5"),
                 effort: Some("high".into()),
-                display_name: "Claude Haiku 5.5".into(),
+                display_name: format!("Claude {}{} 5.5", family[..1].to_uppercase(), &family[1..]),
             },
         )?;
         let template = catalog["models"][0].clone();
@@ -631,12 +636,12 @@ async fn probe(
             .unwrap()
             .push(agent_relay::profiles::catalog_entry(
                 &template,
-                "haiku55_high",
+                &profile_name,
                 &profile,
             ));
         std::fs::write(
-            home.join("agents/agentrelay_profile_haiku55_high.toml"),
-            agent_relay::profiles::role_document("haiku55_high", &profile)?,
+            home.join(format!("agents/agentrelay_profile_{profile_name}.toml")),
+            agent_relay::profiles::role_document(&profile_name, &profile)?,
         )?;
     }
     std::fs::write(
@@ -692,10 +697,10 @@ async fn probe(
             let root_binding=if name=="prepared-wrong-root" {"unrelated-root"}else{&root};
             *server.state.handoff.lock().unwrap()=Some(json!({"root_id":root_binding,"agent_path":"/root/claude_worker","prompt_file":prompt_file}));
             if production {
-                if name=="product-haiku-high" {
+                if let Some(family)=profile_family(name) {
                     let prompt=workspace.join("explicit-handoff.txt");
                     let output=std::process::Command::new(&relay).arg("--home").arg(workspace.join("relay-state"))
-                        .args(["prepare","--runtime","claude","--model","Haiku 5.5","--effort","high","--timeout-seconds","45","--root-id",&root,"--agent-path","/root/claude_worker","--workspace"])
+                        .args(["prepare","--runtime","claude","--model",&format!("{family} 5.5"),"--effort","high","--timeout-seconds","45","--root-id",&root,"--agent-path","/root/claude_worker","--workspace"])
                         .arg(&workspace).arg("--prompt-file").arg(prompt).output()?;
                     ensure!(output.status.success(),"Model selection preflight failed: {}",String::from_utf8_lossy(&output.stderr));
                 }else{prepare_production(&workspace,&root,TASK)?;}
@@ -771,16 +776,24 @@ async fn native_role_provider_override_is_ignored() -> Result<()> {
     Ok(())
 }
 
+fn profile_family(name: &str) -> Option<&'static str> {
+    match name {
+        "product-haiku-high" => Some("haiku"),
+        "product-opus-high" => Some("opus"),
+        _ => None,
+    }
+}
+
 fn verify_native_answer(result: &Value, answer: &str) -> Result<()> {
     let thread = &result["child"]["thread"];
     ensure!(
         thread["parentThreadId"] == result["root_thread_id"],
         "Child is not registered under the actual parent"
     );
-    let expected_model = if result["case"] == "product-haiku-high" {
-        "agentrelay-profile-haiku55_high"
+    let expected_model = if let Some(family) = profile_family(result["case"].as_str().unwrap()) {
+        format!("agentrelay-profile-{family}55_high")
     } else {
-        CHILD
+        CHILD.to_owned()
     };
     ensure!(
         thread["model"] == expected_model,
@@ -1128,8 +1141,21 @@ async fn product_followup_preserves_native_and_external_session() -> Result<()> 
 #[ignore = "Explicit model-selection acceptance: real Haiku 5.5 with high effort through official native child"]
 async fn product_haiku_55_high_is_selected_and_visible_in_native_thread() -> Result<()> {
     let result = probe("product-haiku-high", true, false, false).await?;
-    verify_native_answer(&result, "NATIVE_CLAUDE_SUM=73")?;
-    verify_native_answer(&result, "NATIVE_CLAUDE_DOUBLED=146")?;
+    verify_selected_profile(&result, "haiku", "Claude Haiku 5.5")
+}
+
+#[tokio::test]
+#[ignore = "Real Opus 5.5 high, official native thread and same-session follow-up"]
+async fn product_opus_55_high_is_selected_and_visible_in_native_thread() -> Result<()> {
+    let result = probe("product-opus-high", true, false, false).await?;
+    verify_selected_profile(&result, "opus", "Claude Opus 5.5")
+}
+
+fn verify_selected_profile(result: &Value, family: &str, display_name: &str) -> Result<()> {
+    let external_model = format!("claude-{family}-5-5");
+    let native_id = format!("agentrelay-profile-{family}55_high");
+    verify_native_answer(result, "NATIVE_CLAUDE_SUM=73")?;
+    verify_native_answer(result, "NATIVE_CLAUDE_DOUBLED=146")?;
     let observed = &result["runtime_results"][0];
     ensure!(
         result["child"]["thread"]["reasoningEffort"] == "high",
@@ -1139,19 +1165,19 @@ async fn product_haiku_55_high_is_selected_and_visible_in_native_thread() -> Res
         .as_array()
         .context("Missing native model catalog")?
         .iter()
-        .find(|model| model["model"] == "agentrelay-profile-haiku55_high")
+        .find(|model| model["model"] == native_id)
         .context("Profile missing from the official native model list")?;
     ensure!(
-        native_model["displayName"] == "Claude Haiku 5.5"
+        native_model["displayName"] == display_name
             && native_model["defaultReasoningEffort"] == "high",
         "Native picker label or effort mismatch"
     );
     ensure!(
-        observed["requested_model"] == "claude-haiku-5-5",
+        observed["requested_model"] == external_model,
         "Human model name was not normalized"
     );
     ensure!(
-        observed["model"] == "claude-haiku-5-5",
+        observed["model"] == external_model,
         "A different model actually answered"
     );
     ensure!(
@@ -1170,8 +1196,8 @@ async fn product_haiku_55_high_is_selected_and_visible_in_native_thread() -> Res
         .as_str()
         .unwrap();
     ensure!(
-        final_text.contains("Requested model: claude-haiku-5-5")
-            && final_text.contains("Observed model: claude-haiku-5-5")
+        final_text.contains(&format!("Requested model: {external_model}"))
+            && final_text.contains(&format!("Observed model: {external_model}"))
             && final_text.contains("Requested effort: high"),
         "Selection details are missing from native history"
     );

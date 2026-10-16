@@ -27,12 +27,12 @@ Relevant source areas in the downloaded `openai/codex` revision `f0c5077c34ec7a7
 
 ## Assignment and native turn protocol
 
-1. The parent writes a private plaintext task and calls `prepare` with its actual root ID and planned canonical child path. The registry snapshots task text and immutable runtime settings.
+1. The parent writes a private plaintext task and calls `prepare` with its actual root ID and planned canonical child path. The registry snapshots task text, immutable runtime settings and the native model/profile selection. New explicit selections need a configured profile; legacy workers keep their original routing through upgrades.
 2. The parent spawns one native child using an `agentrelay-RUNTIME` model alias.
 3. The provider reads native root/thread/turn metadata, looks up the exact root/path binding, verifies the model alias and pins the first actual child ID. Another root or child cannot claim it.
 4. An immediate SQLite transaction consumes the pending assignment and records the native turn and runner claim. The native turn ID supplies the idempotency key.
 5. The provider emits a labeled task receipt and runs the adapter. Opaque native messages are never decrypted, decoded or treated as plaintext task content.
-6. The runner requires one successful structured terminal event plus successful process exit. The provider persists a terminal snapshot and emits the actual result.
+6. While the CLI is busy, the provider sends `response.in_progress` every 15 seconds to keep Codex's SSE idle timer alive. It does not fabricate assistant text or usage. The runner requires one successful structured terminal event plus successful process exit. The provider persists a terminal snapshot and emits the actual result.
 7. A repeated native turn replays that snapshot. An in-progress or unresolved claim is rejected; recovery never silently repeats work. If the runner finished before the native snapshot was saved, retry reconstructs it from the matching terminal generation.
 8. A follow-up requires a fresh prepared task and the same native child. The runner resumes the same external session with a new generation.
 

@@ -38,6 +38,27 @@ pub fn load(home: &Path) -> Result<BTreeMap<String, Profile>> {
     Ok(config.profiles)
 }
 
+/// Common explicit selections, installed before new Codex conversations start.
+pub fn install_defaults(home: &Path) -> Result<()> {
+    for family in ["haiku", "sonnet", "opus"] {
+        let profile = Profile {
+            runtime: "claude".into(),
+            model: format!("claude-{family}-5-5"),
+            effort: Some("high".into()),
+            display_name: format!("Claude {}{} 5.5", family[..1].to_uppercase(), &family[1..]),
+        };
+        if !load(home)?.values().any(|p| {
+            p == &profile
+                || (p.runtime == profile.runtime
+                    && p.model == profile.model
+                    && p.effort == profile.effort)
+        }) {
+            add(home, &format!("{family}55_high"), profile)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn model_alias(name: &str) -> String {
     format!("agentrelay-profile-{name}")
 }
@@ -66,6 +87,9 @@ pub fn add(home: &Path, name: &str, mut profile: Profile) -> Result<Profile> {
             && p.effort == profile.effort),
         "A native profile already exists for this selection"
     );
+    // Preserve every legacy worker's native routing before this new profile
+    // could change how its model/effort would otherwise be resolved.
+    crate::provider::Registry::open(home)?;
     profiles.insert(name.into(), profile.clone());
     crate::codex::atomic_write(
         &home.join("models.toml"),

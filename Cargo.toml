@@ -1,6 +1,6 @@
 [package]
 name = "agent-relay"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.95"
 description = "External CLI runtimes for native Codex agents"

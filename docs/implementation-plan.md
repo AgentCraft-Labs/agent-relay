@@ -14,6 +14,9 @@
 10. Publish only source, templates, documentation and sanitized aggregate evidence after checking the exact Git payload for sensitive data.
 11. Support explicit external model/effort selection with normalization, version/capability checks, resume preservation and observed-model validation.
 12. Register immutable profiles through the native model catalog and agent roles; verify display names, native reasoning settings and execution alignment through the official app-server.
+13. Persist native selections per worker, migrate legacy bindings before adding profiles, and reject explicit new selections without a matching native profile.
+14. Install common Claude high-effort profiles through an upgrade command that waits for idle workers by default; verify active-session recovery during an explicitly authorized local restart.
+15. Emit periodic SSE progress events during quiet CLI execution to prevent Codex's idle-stream timeout while preserving disconnect cancellation.
 
 ## Release checks
 

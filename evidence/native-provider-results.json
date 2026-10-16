@@ -1,19 +1,20 @@
 {
   "schema_version": 2,
   "date": "2026-10-16",
-  "release": "0.3.1",
+  "release": "0.3.2",
   "official_binary": {
     "version": "codex-cli 0.163.0-alpha.10.2",
     "sha256": "50ab38ba21d0d9f8346f32f41848382f15b556190f3c7a07e885a4fb73e379c8",
     "modified": false
   },
   "ordinary_tests": {
-    "passed": 25,
+    "passed": 28,
     "failed": 0,
-    "native_live_tests_ignored_by_default": 12
+    "native_live_tests_ignored_by_default": 13,
+    "platform": "macOS; one upgrade-service guard test is macOS-only"
   },
   "native_acceptance": {
-    "passed": 12,
+    "passed": 13,
     "failed": 0,
     "real_parent": true,
     "real_claude_cli": true,
@@ -33,11 +34,11 @@
     "normal_user_configuration": true,
     "isolated_codex_home": false,
     "parent_provider": "agentrelay",
-    "child_model": "agentrelay-profile-haiku55_high",
+    "child_model": "agentrelay-profile-opus55_high",
     "official_app_read_thread_confirmed": true,
     "full_task_and_real_result_recorded": true,
     "native_reasoning_effort": "high",
-    "native_model_profile": "haiku55_high",
+    "native_model_profile": "opus55_high",
     "hidden_workers_omitted_from_default_model_list": true,
     "hidden_worker_metadata_available": true,
     "worker_promotions_removed": true
@@ -74,7 +75,15 @@
     "native_reasoning_effort": "high",
     "native_catalog_display_name": "Claude Haiku 5.5",
     "same_session_followup": true,
-    "native_widget_visually_verified": false
+    "native_widget_visually_verified": false,
+    "opus_55_high_live_test_passed": true,
+    "opus_native_model": "agentrelay-profile-opus55_high",
+    "opus_observed_model": "claude-opus-5-5",
+    "default_high_profiles": [
+      "Haiku 5.5",
+      "Sonnet 5.5",
+      "Opus 5.5"
+    ]
   },
   "model_picker": {
     "workers_hidden": true,
@@ -87,5 +96,32 @@
     "profile_native_spawn_and_followup_passed": true,
     "existing_openai_entries_preserved": true,
     "rendered_menu_visually_verified": false
+  },
+  "native_binding": {
+    "explicit_selection_requires_profile": true,
+    "legacy_bindings_migrated_before_profiles_change": true,
+    "profile_addition_preserves_generic_worker_resume": true,
+    "model_and_effort_mismatch_rejected": true
+  },
+  "stream_keepalive": {
+    "event": "response.in_progress",
+    "interval_seconds": 15,
+    "quiet_fixture_seconds": 17,
+    "tested_idle_deadline_seconds": 16,
+    "fixture_completed": true,
+    "fabricated_assistant_text": false,
+    "fabricated_token_usage": false,
+    "http_disconnect_cleanup_preserved": true
+  },
+  "local_active_upgrade_recovery": {
+    "task_id_preserved": true,
+    "session_id_preserved": true,
+    "before_generation": 4,
+    "after_generation": 5,
+    "status": "running",
+    "observed_model": "claude-opus-5-5",
+    "old_worker_reaped": true,
+    "running_provider_version": "0.3.2",
+    "native_label_preserved": "legacy generic label"
   }
 }

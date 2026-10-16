@@ -159,6 +159,13 @@ enum ProfileCommand {
 
 #[derive(Subcommand)]
 enum CodexCommand {
+    /// Upgrade the user integration and default profiles between external turns.
+    Upgrade {
+        #[arg(long)]
+        wait_idle: bool,
+        #[arg(long, default_value = "127.0.0.1:39091")]
+        listen: std::net::SocketAddr,
+    },
     /// Install/restart the per-user macOS LaunchAgent for the provider.
     ServiceInstall {
         #[arg(long, default_value = "127.0.0.1:39091")]
@@ -225,6 +232,9 @@ async fn main() {
 async fn run(cli: Cli) -> Result<()> {
     let home = cli.home.map(Ok).unwrap_or_else(default_home)?;
     match cli.command {
+        Command::Codex {
+            command: CodexCommand::Upgrade { wait_idle, listen },
+        } => return codex::upgrade(&home, wait_idle, listen).await,
         Command::Codex {
             command: CodexCommand::ServiceInstall { listen },
         } => return codex::install_service(&home, listen),
@@ -316,8 +326,7 @@ async fn run(cli: Cli) -> Result<()> {
             adapter.normalize_request(&mut request)?;
             adapter.preflight(&request).await?;
             let selection = json!({"model":request.model,"effort":request.effort});
-            let native = agent_relay::profiles::native_selection(&home, &request)?;
-            provider::Registry::open(&home)?.prepare(&provider::Assignment {
+            let native = provider::Registry::open(&home)?.prepare(&provider::Assignment {
                 root_id: root_id.clone(),
                 agent_path: agent_path.clone(),
                 request,

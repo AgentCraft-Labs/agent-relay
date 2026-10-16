@@ -16,11 +16,15 @@ Selections enter the assignment and submission fingerprints. Native follow-ups r
 
 The catalog exposes the requested display name and, for explicit effort, only that supported/default level. The role chooses the profile model and effort. `prepare` returns the matching native selection. Claiming a different native model or effort fails before CLI execution. This prevents a high-effort task from running behind a native low-effort setting. Profiles are configured before starting a conversation; existing app sessions may need a restart/catalog reload.
 
+`codex upgrade --wait-idle` installs default Haiku 5.5 high, Sonnet 5.5 high and Opus 5.5 high profiles. New explicit selections require a matching profile; they cannot silently fall back to the generic low/Light role. `prepare` reports the missing setup before creating an assignment. Versionless aliases and different efforts need their own profiles.
+
+Native selection is persisted with each assignment, independently of the mutable set of installed profiles. Legacy assignments are migrated before new profiles are written. A previously generic Opus worker therefore keeps its native alias and external session when an Opus profile is added; new workers use the new profile. Follow-ups return and validate the original native selection. Existing labels are not rewritten retroactively.
+
 All external worker entries use `visibility = "hide"`, a low ranking priority, and no `availability_nux`, `upgrade` or `model_messages` inherited from the OpenAI template. This prevents worker aliases from being advertised as new main-chat models. The official default `model/list` excludes them; `model/list` with `includeHidden = true` retains their metadata with `hidden = true` and `isDefault = false`. Native role selection still resolves those IDs. Existing OpenAI entries are preserved. This does not prohibit an explicit model ID override or remove the entries from clients that deliberately request hidden models.
 
 Older AgentRelay versions copied the template's picker visibility and promotional metadata. Upgrade the runner, rerun `codex configure`, and fully quit/reopen the desktop app to refresh its process-local catalog. No Codex binary changes or edits to unrelated model-announcement preferences are required.
 
-Profiles cannot be repurposed for another model or label, avoiding historical threads being relabeled. The installer also protects edited or unrelated role files. Generic runtime aliases continue to support selections without a profile, but do not claim a dedicated external model display name.
+Profiles cannot be repurposed for another model or label, avoiding historical threads being relabeled. The installer also protects edited or unrelated role files. Generic runtime aliases continue to support runtime defaults and legacy workers, but do not claim a dedicated external model display name.
 
 The official `model/list` API supplies the profile's friendly display name and supported/default effort. Native `thread/read` supplies its model ID and `reasoningEffort`. These are real Codex fields, not fabricated conversation labels. The app controls how it renders the top-right widget; API verification does not establish exact visual layout. Picker changes that disagree with an immutable assignment fail explicitly rather than silently changing the external task.
 

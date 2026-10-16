@@ -205,6 +205,126 @@ fn native_profiles_install_real_catalog_roles_and_reject_mismatched_picker_setti
     assert_eq!(std::fs::read_to_string(role).unwrap(), "user edited role");
 }
 
+#[test]
+fn explicit_selections_require_a_native_profile_instead_of_a_light_label() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("state");
+    let registry = Registry::open(&home).unwrap();
+    let mut task = assignment(dir.path());
+    task.request.model = Some("Opus 5.5".into());
+    task.request.effort = Some("high".into());
+    let error = registry.prepare(&task).unwrap_err().to_string();
+    assert!(error.contains("No native profile"), "{error}");
+    agent_relay::profiles::install_defaults(&home).unwrap();
+    agent_relay::profiles::install_defaults(&home).unwrap();
+    assert_eq!(agent_relay::profiles::load(&home).unwrap().len(), 3);
+    let native = registry.prepare(&task).unwrap();
+    assert_eq!(native["model"], "agentrelay-profile-opus55_high");
+    assert_eq!(native["reasoning_effort"], "high");
+    assert!(registry.claim(&request("root-a", "child", "turn")).is_err());
+    let mut input = request("root-a", "child", "turn");
+    input["model"] = native["model"].clone();
+    input["reasoning"] = json!({"effort":"low"});
+    assert!(registry.claim(&input).is_err());
+    input["reasoning"]["effort"] = json!("high");
+    assert!(matches!(
+        registry.claim(&input).unwrap(),
+        Delivery::Execute { .. }
+    ));
+}
+
+#[test]
+fn adding_profiles_preserves_legacy_generic_workers_and_their_resumes() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("state");
+    let store = Store::open(&home).unwrap();
+    let mut task = assignment(dir.path());
+    task.request.model = Some("claude-opus-5-5".into());
+    task.request.effort = Some("high".into());
+    // Reproduce the exact pre-upgrade schema and prepared generic selection.
+    let conn = rusqlite::Connection::open(home.join("native.sqlite")).unwrap();
+    conn.execute_batch("CREATE TABLE assignments(root TEXT NOT NULL,path TEXT NOT NULL,body TEXT NOT NULL,child TEXT,task TEXT,pending INTEGER NOT NULL,PRIMARY KEY(root,path));").unwrap();
+    conn.execute(
+        "INSERT INTO assignments(root,path,body,pending) VALUES(?1,?2,?3,1)",
+        rusqlite::params![
+            task.root_id,
+            task.agent_path,
+            serde_json::to_string(&task).unwrap()
+        ],
+    )
+    .unwrap();
+    drop(conn);
+    // add() must freeze the old binding BEFORE the new profile is written.
+    agent_relay::profiles::install_defaults(&home).unwrap();
+    let registry = Registry::open(&home).unwrap();
+    let native = registry.prepare(&task).unwrap();
+    assert_eq!(native["model"], "agentrelay-claude");
+    assert_eq!(native["legacy_native_label"], true);
+    let Delivery::Execute { claim, .. } = registry
+        .claim(&request("root-a", "child", "turn-one"))
+        .unwrap()
+    else {
+        panic!("Expected legacy claim")
+    };
+    store
+        .observe(
+            &claim,
+            RuntimeEvent::Session {
+                id: "legacy-opus-session".into(),
+                model: Some("claude-opus-5-5".into()),
+            },
+        )
+        .unwrap();
+    store
+        .finish(&claim, Status::Completed, Some("first result".into()), None)
+        .unwrap();
+    task.request.prompt = "Continue from the previous result".into();
+    assert_eq!(registry.prepare(&task).unwrap(), native);
+    let mut mismatched = request("root-a", "child", "turn-two");
+    mismatched["model"] = json!("agentrelay-profile-opus55_high");
+    mismatched["reasoning"] = json!({"effort":"high"});
+    assert!(
+        registry.claim(&mismatched).is_err(),
+        "Existing agent was silently relabeled"
+    );
+    let Delivery::Execute { claim: next, .. } = registry
+        .claim(&request("root-a", "child", "turn-two"))
+        .unwrap()
+    else {
+        panic!("Expected resume")
+    };
+    assert_eq!(next.task.id, claim.task.id);
+    assert_eq!(next.task.session_id.as_deref(), Some("legacy-opus-session"));
+    assert_eq!(next.task.generation, 2);
+    assert_eq!(next.task.request.effort.as_deref(), Some("high"));
+    let mut fresh = task;
+    fresh.agent_path = "/root/new_worker".into();
+    assert_eq!(
+        registry.prepare(&fresh).unwrap()["model"],
+        "agentrelay-profile-opus55_high"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn upgrade_refuses_to_restart_an_active_worker_without_wait_idle() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("state");
+    Store::open(&home)
+        .unwrap()
+        .begin("active", assignment(dir.path()).request)
+        .unwrap();
+    let error = agent_relay::codex::upgrade(&home, false, "127.0.0.1:39091".parse().unwrap())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Active workers"), "{error}");
+    assert!(
+        !home.join("models.toml").exists(),
+        "Changed profiles during an active turn"
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn http_authentication_replay_and_disconnect_cleanup() {
@@ -280,6 +400,38 @@ async fn http_authentication_replay_and_disconnect_cleanup() {
         std::fs::read_to_string(dir.path().join("executions")).unwrap(),
         "x"
     );
+    // No CLI output for 17 seconds: the 15-second SSE progress event must
+    // arrive before a 16-second idle deadline, without fabricating text/tokens.
+    std::fs::write(dir.path().join("heartbeat"), "").unwrap();
+    let source = std::fs::read_to_string(&driver).unwrap();
+    std::fs::write(
+        &driver,
+        source.replace(
+            "if [ -f slow ]",
+            "if [ -f heartbeat ]; then sleep 17; fi\nif [ -f slow ]",
+        ),
+    )
+    .unwrap();
+    assignment.request.prompt = "Wait for the quiet worker".into();
+    registry.prepare(&assignment).unwrap();
+    input["client_metadata"]["turn_id"] = json!("turn-heartbeat");
+    let mut response = request(&input)
+        .header(agent_relay::provider::KEY_HEADER, "test-secret")
+        .send()
+        .await
+        .unwrap();
+    let mut stream = String::new();
+    while let Some(chunk) = tokio::time::timeout(Duration::from_secs(16), response.chunk())
+        .await
+        .expect("Quiet CLI caused an SSE idle timeout")
+        .unwrap()
+    {
+        stream.push_str(std::str::from_utf8(&chunk).unwrap());
+    }
+    assert!(stream.contains("event: response.in_progress"));
+    assert!(stream.contains("response.completed"));
+    assert!(!stream.contains("input_tokens"));
+    std::fs::remove_file(dir.path().join("heartbeat")).unwrap();
     // Resume a slow CLI turn, then close the actual HTTP response body.
     std::fs::write(dir.path().join("slow"), "").unwrap();
     assignment.request.prompt = "Wait for cancellation".into();
@@ -294,7 +446,7 @@ async fn http_authentication_replay_and_disconnect_cleanup() {
     let mut worker = None;
     for _ in 0..100 {
         let task = store.list(None).unwrap().remove(0);
-        if task.generation == 2 && task.worker.is_some() {
+        if task.generation == 3 && task.worker.is_some() {
             worker = task.worker;
             break;
         }
@@ -314,7 +466,7 @@ async fn http_authentication_replay_and_disconnect_cleanup() {
     assert!(stopped, "Disconnect did not stop/reap external process");
     assert_eq!(
         std::fs::read_to_string(dir.path().join("executions")).unwrap(),
-        "x"
+        "xx"
     );
     process.kill().await.unwrap();
     process.wait().await.unwrap();

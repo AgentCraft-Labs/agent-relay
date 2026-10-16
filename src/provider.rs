@@ -54,11 +54,49 @@ impl Registry {
              CREATE TABLE IF NOT EXISTS assignments (
                  root TEXT NOT NULL, path TEXT NOT NULL, body TEXT NOT NULL,
                  child TEXT, task TEXT, pending INTEGER NOT NULL,
+                 native TEXT,
                  PRIMARY KEY(root,path));
              CREATE TABLE IF NOT EXISTS native_turns (
                  id TEXT PRIMARY KEY, root TEXT NOT NULL, child TEXT NOT NULL,
                  task TEXT NOT NULL, generation INTEGER NOT NULL, result TEXT);",
         )?;
+        // Snapshot legacy bindings before profiles can be added or changed.
+        // New selections must never relabel or strand an existing worker.
+        let mut conn = registry.conn()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let has_native = tx
+            .prepare("PRAGMA table_info(assignments)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .any(|name| name == "native");
+        if !has_native {
+            tx.execute("ALTER TABLE assignments ADD COLUMN native TEXT", [])?;
+        }
+        let legacy = tx
+            .prepare("SELECT root,path,body FROM assignments WHERE native IS NULL")?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (root, path, body) in legacy {
+            let assignment: Assignment = serde_json::from_str(&body)?;
+            let mut native = crate::profiles::native_selection(home, &assignment.request)?;
+            if native["profile"].is_null()
+                && (assignment.request.model.is_some() || assignment.request.effort.is_some())
+            {
+                native["legacy_native_label"] = json!(true);
+            }
+            tx.execute(
+                "UPDATE assignments SET native=?1 WHERE root=?2 AND path=?3",
+                params![native.to_string(), root, path],
+            )?;
+        }
+        tx.commit()?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -76,7 +114,7 @@ impl Registry {
         Ok(conn)
     }
 
-    pub fn prepare(&self, assignment: &Assignment) -> Result<()> {
+    pub fn prepare(&self, assignment: &Assignment) -> Result<Value> {
         let mut assignment = assignment.clone();
         CliAdapter::resolve(&self.home, &assignment.request.runtime)?
             .normalize_request(&mut assignment.request)?;
@@ -113,14 +151,15 @@ impl Registry {
         CliAdapter::resolve(&self.home, &assignment.request.runtime)?;
         let mut conn = self.conn()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let previous: Option<(String, Option<String>, bool)> = tx
+        let previous: Option<(String, Option<String>, bool, String)> = tx
             .query_row(
-                "SELECT body,task,pending FROM assignments WHERE root=?1 AND path=?2",
+                "SELECT body,task,pending,native FROM assignments WHERE root=?1 AND path=?2",
                 params![assignment.root_id, assignment.agent_path],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
-        if let Some((body, task, pending)) = previous {
+        let native = if let Some((body, task, pending, native)) = previous {
+            let native: Value = serde_json::from_str(&native)?;
             let old: Assignment = serde_json::from_str(&body)?;
             let mut settings = old.request.clone();
             settings.prompt = assignment.request.prompt.clone();
@@ -147,7 +186,7 @@ impl Registry {
                     body == serde_json::to_string(assignment)?,
                     "An unconsumed task is already prepared"
                 );
-                return Ok(());
+                return Ok(native);
             }
             if let Some(task) = task {
                 ensure!(
@@ -155,18 +194,28 @@ impl Registry {
                     "Wait for the active external turn before preparing a follow-up"
                 );
             }
-        }
+            native
+        } else {
+            let native = crate::profiles::native_selection(&self.home, &assignment.request)?;
+            ensure!(
+                (assignment.request.model.is_none() && assignment.request.effort.is_none())
+                    || native["profile"].is_string(),
+                "No native profile matches the requested model/effort. Register it with profile add, run codex configure, and start a new Codex conversation before preparing this task; refusing a misleading generic model/effort label"
+            );
+            native
+        };
         tx.execute(
-            "INSERT INTO assignments(root,path,body,pending) VALUES(?1,?2,?3,1)
+            "INSERT INTO assignments(root,path,body,pending,native) VALUES(?1,?2,?3,1,?4)
             ON CONFLICT(root,path) DO UPDATE SET body=excluded.body,pending=1",
             params![
                 assignment.root_id,
                 assignment.agent_path,
-                serde_json::to_string(assignment)?
+                serde_json::to_string(assignment)?,
+                native.to_string()
             ],
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(native)
     }
 
     pub fn claim(&self, request: &Value) -> Result<Delivery> {
@@ -227,11 +276,25 @@ impl Registry {
             tx.commit()?;
             return Ok(Delivery::Replay(result));
         }
-        let (body, bound_child, task, pending): (String, Option<String>, Option<String>, bool) = tx
+        let (body, bound_child, task, pending, native): (
+            String,
+            Option<String>,
+            Option<String>,
+            bool,
+            String,
+        ) = tx
             .query_row(
-                "SELECT body,child,task,pending FROM assignments WHERE root=?1 AND path=?2",
+                "SELECT body,child,task,pending,native FROM assignments WHERE root=?1 AND path=?2",
                 params![root, path],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()?
             .context("No explicit task prepared for this root and native agent path")?;
@@ -244,7 +307,7 @@ impl Registry {
             "This task path is already bound to another native thread"
         );
         let assignment: Assignment = serde_json::from_str(&body)?;
-        let native = crate::profiles::native_selection(&self.home, &assignment.request)?;
+        let native: Value = serde_json::from_str(&native)?;
         ensure!(
             request["model"] == native["model"],
             "Native model does not match the prepared selection; spawn role {} with model {}",
@@ -334,7 +397,9 @@ pub fn execution_details(summary: &Value) -> String {
         summary["requested_model"]
             .as_str()
             .unwrap_or("runtime default"),
-        summary["model"].as_str().unwrap_or("not reported yet"),
+        summary["model"]
+            .as_str()
+            .unwrap_or("not reported when this receipt was recorded; see the final result"),
         summary["requested_effort"]
             .as_str()
             .unwrap_or("runtime default")
@@ -378,6 +443,7 @@ pub async fn serve(home: &Path, address: SocketAddr) -> Result<()> {
     });
     let router = Router::new()
         .route("/health", get(|| async { "AgentRelay" }))
+        .route("/version", get(|| async { axum::Json(json!({"service":"AgentRelay","version":env!("CARGO_PKG_VERSION"),"sse_heartbeat_seconds":15})) }))
         .route("/responses", post(responses))
         .route("/v1/responses", post(responses))
         .layer(DefaultBodyLimit::max(16 * MAX_FRAME))
@@ -478,11 +544,27 @@ async fn respond(state: Arc<Service>, headers: HeaderMap, body: Bytes) -> Result
                     let task_id = claim.task.id.clone();
                     let run = runner::execute(&store, *claim, adapter);
                     tokio::pin!(run);
-                    let task = tokio::select! {
-                        task = &mut run => task?,
-                        _ = tx.closed() => {
-                            store.interrupt(&task_id,"Native provider stream disconnected")?;
-                            run.await?
+                    let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+                    heartbeat.tick().await;
+                    let task = loop {
+                        tokio::select! {
+                            task = &mut run => break task?,
+                            _ = tx.closed() => {
+                                store.interrupt(&task_id,"Native provider stream disconnected")?;
+                                break run.await?;
+                            }
+                            _ = heartbeat.tick() => {
+                                // A real SSE data event resets Codex's idle timer.
+                                // SSE comments alone are swallowed by its parser.
+                                let progress = frame(json!({"type":"response.in_progress","response":{"id":id,"status":"in_progress"}}))?;
+                                match tx.try_send(Ok(progress)) {
+                                    Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {},
+                                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                                        store.interrupt(&task_id,"Native provider stream disconnected")?;
+                                        break run.await?;
+                                    }
+                                }
+                            }
                         }
                     };
                     let result = json!({"prompt":prompt,"task":runner::summary(&task)});
