@@ -18,6 +18,8 @@
 14. Install common Claude high-effort profiles through an upgrade command that waits for idle workers by default; verify active-session recovery during an explicitly authorized local restart.
 15. Emit periodic SSE progress events during quiet CLI execution to prevent Codex's idle-stream timeout while preserving disconnect cancellation.
 
+16. Recover missing macOS provider registrations with an independent periodic guardian; write service files before unload and verify a real unload/recovery plus authenticated parent inference.
+
 ## Release checks
 
 Run formatting, all ordinary tests and clippy. Explicitly run the ignored native acceptance suite only when authorized to consume external model usage. Keep raw transcripts, account configuration and session registries private. Validate the installed skill with the system skill validator and discovery from unrelated projects.

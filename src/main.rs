@@ -171,6 +171,11 @@ enum CodexCommand {
         #[arg(long, default_value = "127.0.0.1:39091")]
         listen: std::net::SocketAddr,
     },
+    /// Restore a missing macOS provider registration without killing workers.
+    ServiceEnsure {
+        #[arg(long, default_value = "127.0.0.1:39091")]
+        listen: std::net::SocketAddr,
+    },
     /// Install a self-contained skill and native role, protecting user edits.
     Install {
         #[arg(long, required_unless_present = "user", conflicts_with = "user")]
@@ -238,6 +243,9 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Codex {
             command: CodexCommand::ServiceInstall { listen },
         } => return codex::install_service(&home, listen),
+        Command::Codex {
+            command: CodexCommand::ServiceEnsure { listen },
+        } => return agent_relay::service::ensure_service(&codex::user_root()?, listen),
         Command::Codex {
             command: CodexCommand::Install { project, user },
         } => return codex::install(&project.unwrap_or(codex::user_root()?), user),

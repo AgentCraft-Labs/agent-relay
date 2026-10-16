@@ -8,6 +8,7 @@ AgentRelay attaches at Codex's Responses-provider boundary. The official executa
 | --- | --- |
 | Native Codex parent | Plan, prepare an explicit task, spawn/wait/follow up |
 | Native child harness | Native thread identity, lifecycle, messages and completion |
+| macOS service guardian | Restore missing provider registration every 10 seconds; never kill healthy workers |
 | Local Responses provider | Route normal models to OpenAI and CLI aliases to a prepared task |
 | Assignment registry | Bind plaintext tasks to root/path, pin the actual child, snapshot native turns |
 | Runner registry | External session, generation, ownership, results, messages and events |
@@ -57,3 +58,9 @@ The companion is a trusted process with the user's permissions, not an extension
 A dropped provider response body interrupts the owned runner and waits for process cleanup. Explicit registry interruption also works. The runner heartbeats every 250 ms, owns a separate process group, sends TERM then KILL after 750 ms and reaps it. The provider watchdog reconciles leases older than 15 seconds. PID start times and process-group ownership prevent killing recycled PIDs. Generation/token checks reject stale results.
 
 The transport cancellation test does not establish the timing of every desktop Stop control. Likewise, app-server history checks establish the data contract, not a rendered screenshot. These acceptance boundaries are recorded explicitly in verification.
+
+## Provider availability
+
+All chats configured with the inherited AgentRelay provider require its local HTTP listener, including ordinary OpenAI parent requests. A missing listener is a shared availability dependency, rather than evidence of damaged chat history. macOS process exits are covered by the provider LaunchAgent’s `KeepAlive`. An independently registered periodic guardian also restores a provider removed from launchd entirely. It probes the loopback `/version` identity without credentials, bootstraps a missing registration, or starts a registered stopped job without `kickstart -k`. Healthy jobs are left intact. Unresponsive running jobs and conflicting listeners produce an actionable error rather than destructive retries.
+
+Service installation writes both plists before unloading the provider and registers the guardian before the provider restart. Thus a file-write failure leaves the old process running, and interruption between provider unload/reload leaves a repair path. Recovery does not replay tasks, alter model selections or rewrite native chat storage. launchd scheduling and external availability remain outside the recovery guarantee. Intentional shutdown must unload the guardian before the provider.

@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-16",
+  "release": "0.3.3",
+  "ordinary_tests": {
+    "passed": 35,
+    "failed": 0,
+    "platform": "macOS",
+    "native_live_tests_ignored_by_default": 13
+  },
+  "checks": {
+    "formatting": true,
+    "clippy_all_targets_warnings_denied": true,
+    "release_build": true,
+    "packaged_arm64_binary_and_checksum": true
+  },
+  "installed_macos_recovery": {
+    "version": "0.3.3",
+    "healthy_provider_unchanged_over_guardian_check": true,
+    "cycles": [
+      {
+        "provider_registration_removed": true,
+        "listener_unavailable_observed": true,
+        "automatic_recovery_seconds": 2.03,
+        "new_process": true,
+        "version": "0.3.3"
+      },
+      {
+        "provider_registration_removed": true,
+        "listener_unavailable_observed": true,
+        "automatic_recovery_seconds": 10.1,
+        "new_process": true,
+        "version": "0.3.3"
+      }
+    ]
+  },
+  "native_model_acceptance": {
+    "historical_release": "0.3.2",
+    "results_file": "native-provider-results.json",
+    "repeated_for_this_service_only_change": false
+  },
+  "limitations": [
+    "launchd scheduling and service startup affect recovery latency",
+    "Does not guarantee upstream network availability",
+    "A registered unresponsive process is reported without forcibly killing workers",
+    "No rendered desktop screenshot or user-chat response claimed"
+  ],
+  "authenticated_parent_after_recovery": {
+    "passed": true,
+    "model": "gpt-6.1-sol",
+    "ephemeral": true,
+    "provider": "agentrelay",
+    "expected_result": true
+  }
+}

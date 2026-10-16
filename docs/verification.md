@@ -32,7 +32,7 @@ The real-parent probe uses a controlled routing fixture for observing parent req
 
 A subsequent installed-provider acceptance also passed using the normal user configuration and globally installed service, with both parent and child routed through the production provider. The desktop app's own `read_thread` capability returned the completed native child containing the exact assignment and real result, and `navigate_to_codex_page` successfully opened it in the app. This confirms app-accessible persistence and navigation, while still leaving rendered layout unverified.
 
-The current macOS suite includes thirteen native tests and twenty-eight ordinary checks. New checks reject explicit selections without a native profile, preserve legacy generic worker bindings through profile installation and session resume, and prevent upgrades from restarting an active worker by default. The HTTP test runs a quiet CLI for 17 seconds with a 16-second per-chunk idle deadline: a real `response.in_progress` arrives after 15 seconds and the task completes without fabricated text or token usage. Disconnect cleanup remains covered. Exact aggregate checks and hashes belong in [sanitized results](../evidence/native-provider-results.json). Full transcripts and local identifiers remain excluded from version control.
+The 0.3.2 macOS suite includes thirteen native tests and twenty-eight ordinary checks. New checks reject explicit selections without a native profile, preserve legacy generic worker bindings through profile installation and session resume, and prevent upgrades from restarting an active worker by default. The HTTP test runs a quiet CLI for 17 seconds with a 16-second per-chunk idle deadline: a real `response.in_progress` arrives after 15 seconds and the task completes without fabricated text or token usage. Disconnect cleanup remains covered. Exact aggregate checks and hashes belong in [sanitized results](../evidence/native-provider-results.json). Full transcripts and local identifiers remain excluded from version control.
 
 ## Desktop verification boundary
 
@@ -51,3 +51,11 @@ AGENTRELAY_CODEX_TEST_BIN=/absolute/path/to/official/codex \
 ```
 
 The ignored suite uses real external model usage. Set `AGENTRELAY_REAL_PARENT_MODEL` only to an available model for the existing Codex account. `AGENTRELAY_MODEL_METADATA` can select a current models cache; `AGENTRELAY_TEST_EVIDENCE` chooses a private output directory.
+
+## macOS provider registration recovery (0.3.3)
+
+Regression checks cover the difference between an exited process and an entirely unloaded launchd registration. Unit fixtures verify missing-registration bootstrap, concurrent recovery, bootstrap failure reporting and leaving healthy services untouched. HTTP checks validate the loopback service identity without authentication, refuse nonlocal addresses, and report an unrelated listener.
+
+The installed recovery path is tested by unloading the real provider twice while leaving the independent guardian registered. Acceptance requires both automatic restorations without manual bootstrap, an unchanged healthy provider PID across a guardian check, a responding 0.3.3 `/version`, and a successful authenticated ordinary OpenAI inference through the restored proxy. This operational test does not submit work to or rewrite existing user chats. Evidence is published separately from the native-model acceptance captured on 0.3.2.
+
+Local 0.3.3 acceptance passed 35 ordinary tests, formatting, clippy with warnings denied, the release build and the packaged Apple Silicon binary/checksum. The two real automatic recoveries took 2.03 and 10.10 seconds. Authenticated OpenAI inference through the restored provider returned the exact expected response. See [service recovery results](../evidence/service-recovery-results.json).

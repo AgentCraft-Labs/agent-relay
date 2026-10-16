@@ -20,6 +20,7 @@ chmod 755 "$relay_stage/$relay_name/agentrelay"
 cp readme.md LICENSE "$relay_stage/$relay_name/"
 cp -R docs "$relay_stage/$relay_name/docs"
 cp evidence/native-provider-results.json "$relay_stage/$relay_name/evidence/"
+cp evidence/service-recovery-results.json "$relay_stage/$relay_name/evidence/"
 COPYFILE_DISABLE=1 tar -C "$relay_stage" -czf "$relay_out/$relay_name.tar.gz" "$relay_name"
 (cd "$relay_out" && shasum -a 256 "$relay_name.tar.gz" > "$relay_name.tar.gz.sha256" && shasum -a 256 -c "$relay_name.tar.gz.sha256")
 

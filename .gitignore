@@ -3,6 +3,7 @@
 /.agentrelay/
 /evidence/*
 !/evidence/native-provider-results.json
+!/evidence/service-recovery-results.json
 *.sqlite*
 /.agents/
 /.codex/

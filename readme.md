@@ -77,10 +77,10 @@ sequenceDiagram
 
 Download a prebuilt companion from [GitHub Releases](https://github.com/AgentCraft-Labs/agent-relay/releases/latest). Rust is not required to run it. Choose `macos-arm64` for Apple Silicon or `macos-x86_64` for Intel. The companion is a terminal executable and optional background service; the interface remains the official Codex app.
 
-For version 0.3.2, download and verify the archive in Terminal:
+For version 0.3.3, download and verify the archive in Terminal:
 
 ```bash
-relay_version=0.3.2
+relay_version=0.3.3
 relay_arch=$(uname -m)
 relay_archive="agentrelay-v${relay_version}-macos-${relay_arch}.tar.gz"
 relay_url="https://github.com/AgentCraft-Labs/agent-relay/releases/download/v${relay_version}"
@@ -105,7 +105,7 @@ Start a new Codex conversation using the `agentrelay` provider; restart Codex if
 
 `codex upgrade --wait-idle` installs the user skill, registers **Haiku 5.5 high, Sonnet 5.5 high and Opus 5.5 high**, configures their hidden native roles/catalog entries and starts the macOS service. During an update it waits for active external turns to finish, then applies the upgrade. Existing workers keep their native routing and external sessions; a new profile does not relabel an already-created agent. No CLI model inference is needed for installation.
 
-To run in the foreground instead of installing the background service, use `"$relay_command" serve`. Use one service instance on the configured port. To stop the macOS service, first finish or interrupt active tasks, then run `launchctl bootout gui/$(id -u)/com.agentrelay.provider`. Provider routing depends on the running service; restore the original provider settings when disabling it permanently.
+To run in the foreground instead of installing the background services, use `"$relay_command" serve`. Use one service instance on the configured port. See [service recovery](#service-recovery-and-connection-errors) before stopping an installed service.
 
 The installed executable stays at `~/.agents/skills/agentrelay/scripts/agentrelay`. Commands below use the short name `agentrelay`; either use that full path or add its directory to your PATH. See [release automation](docs/releases.md) for build, packaging and update details.
 
@@ -131,7 +131,43 @@ On Linux, or for a foreground service, run:
 target/release/agentrelay serve --listen 127.0.0.1:39091
 ```
 
-Keep the service running while using the configured provider. On macOS `service-install` installs/restarts `com.agentrelay.provider` through LaunchAgent and preserves the installation PATH for finding the external CLIs. It refuses to restart while tasks are active. The service is local and uses no model.
+Keep the service running while using the configured provider. On macOS `service-install` installs/restarts `com.agentrelay.provider` through LaunchAgent and preserves the installation PATH for finding the external CLIs. It refuses to restart while tasks are active. It also installs the independent `com.agentrelay.guardian` LaunchAgent, which checks every 10 seconds and restores a missing provider registration. Both services are local and use no model.
+
+### Service recovery and connection errors
+
+**Ordinary OpenAI chats using the `agentrelay` provider depend on the local companion too.** If it is unavailable, Codex can show “Reconnecting… waiting for network” even when the Internet works. Older chats may still use their original provider and continue normally. The official Codex version tested here inherits the provider into child agents; a role cannot independently switch only the child to AgentRelay.
+
+From 0.3.3, macOS installs two independent LaunchAgents:
+
+```mermaid
+flowchart LR
+    Launchd[macOS launchd] -->|KeepAlive after process exit| Provider[AgentRelay provider]
+    Guardian[Periodic guardian] -->|Every 10 seconds: health and registration| Provider
+    Guardian -->|Registration missing: bootstrap| Launchd
+    Codex[Official Codex app] --> Provider
+    Provider --> OpenAI[OpenAI parent model]
+    Provider --> CLI[Prepared external CLI agent]
+```
+
+`KeepAlive` covers process exits. The guardian also covers a provider removed with `launchctl bootout`, which `KeepAlive` alone cannot repair. A healthy provider is left running. Recovery does not kill running workers, change task bindings, rewrite chat history, consume model tokens or silently substitute another model. Healthy checks are silent; recovery and errors go to `~/.local/state/agentrelay/guardian.log` and `guardian.err`.
+
+For an immediate manual recovery, without restarting a healthy service:
+
+```bash
+"$HOME/.agents/skills/agentrelay/scripts/agentrelay" codex service-ensure
+curl --fail http://127.0.0.1:39091/version
+```
+
+Installation writes service files before unloading the provider, then registers the guardian before restarting the provider. An interrupted installer can therefore be repaired on the next guardian check. Recovery normally takes the next scheduled check plus service startup; macOS scheduling, permissions and occupied ports can delay or prevent recovery. A registered but unresponsive process is reported without forcibly killing its workers. This does not guarantee Internet or upstream availability.
+
+To intentionally stop the background integration, first finish or interrupt external tasks, then unload **the guardian first** and the provider second:
+
+```bash
+launchctl bootout "gui/$(id -u)/com.agentrelay.guardian"
+launchctl bootout "gui/$(id -u)/com.agentrelay.provider"
+```
+
+Before disabling permanently, restore the ordinary provider in the user configuration and reload Codex. Preserve unrelated settings; do not blindly overwrite the current configuration with an old backup. Existing chats can retain `agentrelay` and still need the service. To restore both services, run `agentrelay codex service-install` when workers are idle.
 
 ### Installation scope and paths
 
@@ -141,7 +177,8 @@ Keep the service running while using the configured provider. On macOS `service-
 | `~/.codex/agents/agentrelay_claude.toml` | Native Claude Code role |
 | `~/.codex/config.toml` | Local provider and model catalog configuration |
 | `~/.local/state/agentrelay/` | Private tasks, assignments, sessions, events and provider key |
-| `~/Library/LaunchAgents/com.agentrelay.provider.plist` | Optional macOS service |
+| `~/Library/LaunchAgents/com.agentrelay.provider.plist` | macOS provider service with process restart |
+| `~/Library/LaunchAgents/com.agentrelay.guardian.plist` | Independent periodic recovery of a missing provider registration |
 
 User installation applies to this operating-system user on this computer. Remote hosts and other users need their own installation. Project installation is available with `codex install --project /absolute/project`; provider configuration/service are still required on that host. Skills discovered at multiple scopes may appear twice.
 

@@ -436,13 +436,7 @@ pub fn install_service(home: &Path, address: SocketAddr) -> Result<()> {
     let root = user_root()?;
     let binary = root.join(".agents/skills/agentrelay/scripts/agentrelay");
     ensure!(binary.is_file(), "Install the user skill first");
-    fn xml(value: &str) -> String {
-        value
-            .replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-    }
+    use crate::service::xml;
     let args = [
         binary.to_string_lossy().into_owned(),
         "--home".into(),
@@ -457,7 +451,9 @@ pub fn install_service(home: &Path, address: SocketAddr) -> Result<()> {
         .collect::<String>();
     let log = home.join("provider.log");
     let error = home.join("provider.err");
-    for path in [&log, &error] {
+    let guardian_log = home.join("guardian.log");
+    let guardian_error = home.join("guardian.err");
+    for path in [&log, &error, &guardian_log, &guardian_error] {
         if !path.exists() {
             atomic_write(path, b"", false)?;
         }
@@ -471,25 +467,56 @@ pub fn install_service(home: &Path, address: SocketAddr) -> Result<()> {
         xml(&error.to_string_lossy())
     );
     let destination = root.join("Library/LaunchAgents/com.agentrelay.provider.plist");
+    let guardian = root.join("Library/LaunchAgents/com.agentrelay.guardian.plist");
+    let guardian_plist = crate::service::guardian_document(&binary, home, address)?;
+    // All fallible file writes precede stopping either service. In particular a
+    // full disk or permission failure must leave the old provider running.
+    atomic_write(&destination, plist.as_bytes(), false)?;
+    atomic_write(&guardian, guardian_plist.as_bytes(), false)?;
     // SAFETY: getuid has no pointer arguments or side effects.
     let domain = format!("gui/{}", unsafe { libc::getuid() });
+    let guardian_target = format!("{domain}/{}", crate::service::GUARDIAN_LABEL);
+    let _ = std::process::Command::new("/bin/launchctl")
+        .args(["bootout", &guardian_target])
+        .output()?;
+    // Recovery is registered before touching the provider. If this installer
+    // exits between bootout and bootstrap, the next guardian check repairs it.
+    bootstrap_service(&domain, &guardian, &guardian_target)?;
     let _ = std::process::Command::new("/bin/launchctl")
         .args(["bootout", &format!("{domain}/com.agentrelay.provider")])
         .output()?;
-    atomic_write(&destination, plist.as_bytes(), false)?;
+    bootstrap_service(
+        &domain,
+        &destination,
+        &format!("{domain}/com.agentrelay.provider"),
+    )?;
+    crate::service::ensure_service(&root, address)?;
+    crate::runner::emit(
+        &json!({"service_installed":true,"label":"com.agentrelay.provider","listen":address,"guardian_installed":true,"recovery_interval_seconds":crate::service::CHECK_INTERVAL_SECONDS}),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn bootstrap_service(domain: &str, destination: &Path, target: &str) -> Result<()> {
     // bootout can return before launchd has released the old registration.
     let mut output = std::process::Command::new("/bin/launchctl")
-        .args(["bootstrap", &domain])
-        .arg(&destination)
+        .args(["bootstrap", domain])
+        .arg(destination)
         .output()?;
     for attempt in 0..5 {
-        if output.status.success() {
-            break;
+        if output.status.success()
+            || std::process::Command::new("/bin/launchctl")
+                .args(["print", target])
+                .output()?
+                .status
+                .success()
+        {
+            return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(100 << attempt));
         output = std::process::Command::new("/bin/launchctl")
-            .args(["bootstrap", &domain])
-            .arg(&destination)
+            .args(["bootstrap", domain])
+            .arg(destination)
             .output()?;
     }
     ensure!(
@@ -497,9 +524,7 @@ pub fn install_service(home: &Path, address: SocketAddr) -> Result<()> {
         "launchctl bootstrap failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    crate::runner::emit(
-        &json!({"service_installed":true,"label":"com.agentrelay.provider","listen":address}),
-    )
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
