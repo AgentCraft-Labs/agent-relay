@@ -491,11 +491,9 @@ fn models(root_model: &str) -> Result<Value> {
     model["tool_mode"] = json!("direct");
     model["multi_agent_version"] = json!("v2");
     model["default_reasoning_level"] = json!("low");
-    let mut child = model.clone();
+    let child = agent_relay::catalog::runtime_entry(&model, "claude");
     model["slug"] = json!(root_model);
     model["display_name"] = json!("Scripted parent fixture");
-    child["slug"] = json!(CHILD);
-    child["display_name"] = json!("Claude Code CLI runtime");
     Ok(json!({"models":[model,child]}))
 }
 
@@ -678,6 +676,14 @@ async fn probe(
     let outcome=async {
         let mut client=Client::start(&binary,&home,&stderr).await?;
         let model_catalog=client.rpc("model/list",json!({"includeHidden":true,"limit":100})).await?;
+        let picker_catalog=client.rpc("model/list",json!({"limit":100})).await?;
+        for worker in model_catalog["data"].as_array().context("Missing model catalog")?.iter()
+            .filter(|model| model["model"]==CHILD || model["model"].as_str().is_some_and(|slug| slug.starts_with("agentrelay-profile-"))) {
+            ensure!(worker["hidden"]==true && worker["isDefault"]==false,"Worker advertised as visible/default: {worker}");
+            ensure!(worker["availabilityNux"].is_null() && worker["upgrade"].is_null() && worker["upgradeInfo"].is_null(),"Worker inherited an OpenAI promotion: {worker}");
+            ensure!(!picker_catalog["data"].as_array().context("Missing picker catalog")?.iter()
+                .any(|model|model["model"]==worker["model"]),"Worker leaked into the default model list");
+        }
         let developer=if live_parent {"This is a native delegation acceptance test. A bound plaintext handoff is already prepared for /root/claude_worker. You must call collaboration.spawn_agent exactly once with task_name claude_worker, agent_type claude_direct, fork_turns none, and a short message saying to use the prepared handoff. Do not create a Codex supervisor or solve the task yourself. Wait for the child result, then report it. Do not use shell or other tools."}else{"Do not use tools except the scripted collaboration tools."};
         let started=client.rpc("thread/start",json!({"model":root_model,"cwd":workspace,"approvalPolicy":"never","sandbox":"read-only","baseInstructions":"Follow the explicit test task.","developerInstructions":developer})).await?;
         let root=started["thread"]["id"].as_str().context("Root thread ID")?.to_owned();
@@ -707,7 +713,7 @@ async fn probe(
             .find(|item|item["type"]=="subAgentActivity" && item["kind"]=="started")
             .and_then(|item|item["agentThreadId"].as_str()).map(str::to_owned);
         let child=if let Some(id)=&child_id {Some(client.rpc("thread/read",json!({"threadId":id,"includeTurns":true})).await?)}else{None};
-        let result=json!({"case":name,"official_binary":binary,"root_thread_id":root,"child_thread_id":child_id,"parent":parent,"child":child,"model_catalog":model_catalog,"notifications":client.notifications,"provider_requests":server.state.requests.lock().unwrap().clone(),"alternate_provider_requests":alternate.state.requests.lock().unwrap().clone(),"claude_cli_invocations":server.state.claude_calls.load(Ordering::SeqCst),"runtime_results":server.state.runtime_results.lock().unwrap().clone(),"role_command_executed":marker.exists(),"root_inference":if live_parent {"Real authenticated OpenAI parent via official HTTPS upstream"}else{"scripted local fixture; no OpenAI inference"},"upstream_statuses":server.state.forward_statuses.lock().unwrap().clone(),"user_configuration_modified":false,"codex_binary_recompiled":false});
+        let result=json!({"case":name,"official_binary":binary,"root_thread_id":root,"child_thread_id":child_id,"parent":parent,"child":child,"model_catalog":model_catalog,"picker_catalog":picker_catalog,"notifications":client.notifications,"provider_requests":server.state.requests.lock().unwrap().clone(),"alternate_provider_requests":alternate.state.requests.lock().unwrap().clone(),"claude_cli_invocations":server.state.claude_calls.load(Ordering::SeqCst),"runtime_results":server.state.runtime_results.lock().unwrap().clone(),"role_command_executed":marker.exists(),"root_inference":if live_parent {"Real authenticated OpenAI parent via official HTTPS upstream"}else{"scripted local fixture; no OpenAI inference"},"upstream_statuses":server.state.forward_statuses.lock().unwrap().clone(),"user_configuration_modified":false,"codex_binary_recompiled":false});
         client.child.kill().await?;
         Ok::<_,anyhow::Error>(result)
     }.await;
@@ -809,6 +815,18 @@ fn verify_native_answer(result: &Value, answer: &str) -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "Official-binary hidden model catalog and native spawn; local scripted inference only"]
+async fn hidden_worker_is_spawnable_without_becoming_a_picker_model() -> Result<()> {
+    let result = probe("hidden-worker-catalog", false, false, false).await?;
+    verify_native_answer(&result, "FIXTURE_CHILD_EXECUTED_BY_PARENT_PROVIDER")?;
+    ensure!(
+        result["claude_cli_invocations"] == 0,
+        "Unexpected external inference"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "Opt-in probe; launches one real Claude Code task through the Rust runner"]
 async fn native_child_real_claude_via_local_provider() -> Result<()> {
     let result = probe("local-provider-real-claude", true, true, false).await?;
@@ -872,7 +890,9 @@ async fn native_opaque_message_can_use_explicit_bound_handoff() -> Result<()> {
         "Explicit handoff did not execute exactly once"
     );
     ensure!(
-        result["runtime_results"][0]["result"] == "NATIVE_CLAUDE_SUM=73",
+        result["runtime_results"][0]["result"]
+            .as_str()
+            .is_some_and(|text| text.ends_with("NATIVE_CLAUDE_SUM=73")),
         "Wrong external result"
     );
     ensure!(

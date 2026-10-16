@@ -104,11 +104,10 @@ fn provider_configuration_keeps_models_and_existing_settings_and_backs_up_once()
     let original = "# User settings\nmodel = \"original\"\n";
     std::fs::write(codex.join("config.toml"), original).unwrap();
     let catalog = dir.path().join("catalog.json");
-    std::fs::write(
-        &catalog,
-        json!({"models":[{"slug":"original","custom":"kept"}]}).to_string(),
-    )
-    .unwrap();
+    let original_model = json!({"slug":"original","custom":"kept","visibility":"list",
+        "priority":1,"availability_nux":{"message":"Try this OpenAI model"},
+        "upgrade":{"model":"next-openai-model"},"model_messages":{"upgrade":"OpenAI copy"}});
+    std::fs::write(&catalog, json!({"models":[original_model]}).to_string()).unwrap();
     for _ in 0..2 {
         agent_relay::codex::configure(&home, &codex, &catalog, "127.0.0.1:39091".parse().unwrap())
             .unwrap();
@@ -122,8 +121,15 @@ fn provider_configuration_keeps_models_and_existing_settings_and_backs_up_once()
     assert!(config.contains("model = \"original\""));
     let models: serde_json::Value =
         serde_json::from_slice(&std::fs::read(home.join("models.json")).unwrap()).unwrap();
-    assert_eq!(models["models"][0]["custom"], "kept");
+    assert_eq!(models["models"][0], original_model);
     assert_eq!(models["models"].as_array().unwrap().len(), 3);
+    for model in models["models"].as_array().unwrap().iter().skip(1) {
+        assert_eq!(model["visibility"], "hide");
+        assert_eq!(model["priority"], i32::MAX);
+        for field in ["availability_nux", "upgrade", "model_messages"] {
+            assert!(model[field].is_null(), "Inherited {field}: {model}");
+        }
+    }
     assert!(
         agent_relay::codex::configure(&home, &codex, &catalog, "0.0.0.0:39091".parse().unwrap())
             .is_err()
@@ -152,7 +158,10 @@ fn native_profiles_install_real_catalog_roles_and_reject_mismatched_picker_setti
     let catalog = dir.path().join("catalog.json");
     std::fs::write(
         &catalog,
-        json!({"models":[{"slug":"openai","retained":true}]}).to_string(),
+        json!({"models":[{"slug":"openai","retained":true,"visibility":"list",
+            "priority":1,"availability_nux":{"message":"OpenAI promotion"},
+            "upgrade":{"model":"next-openai-model"}}]})
+        .to_string(),
     )
     .unwrap();
     agent_relay::codex::configure(&home, &codex, &catalog, "127.0.0.1:39091".parse().unwrap())
@@ -167,6 +176,10 @@ fn native_profiles_install_real_catalog_roles_and_reject_mismatched_picker_setti
         .unwrap();
     assert_eq!(model["display_name"], "Claude Haiku 5.5");
     assert_eq!(model["default_reasoning_level"], "high");
+    assert_eq!(model["visibility"], "hide");
+    assert_eq!(model["priority"], i32::MAX);
+    assert!(model["availability_nux"].is_null());
+    assert!(model["upgrade"].is_null());
     let role = codex.join("agents/agentrelay_profile_haiku55_high.toml");
     let role_data = std::fs::read_to_string(&role).unwrap();
     assert!(role_data.contains("model_reasoning_effort = \"high\""));

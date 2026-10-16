@@ -255,14 +255,7 @@ pub fn configure(
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
             "Invalid configured runtime name"
         );
-        let mut model = template.clone();
-        model["slug"] = json!(format!("agentrelay-{runtime}"));
-        model["display_name"] = json!(format!("AgentRelay / {runtime} CLI"));
-        model["base_instructions"] = json!("Execute the explicitly prepared AgentRelay task.");
-        model["model_messages"] = Value::Null;
-        model["tool_mode"] = json!("direct");
-        model["multi_agent_version"] = json!("v2");
-        list.push(model);
+        list.push(crate::catalog::runtime_entry(&template, &runtime));
     }
     let profiles = crate::profiles::load(home)?;
     let profile_receipt_path = codex_home.join("agentrelay-models-install.json");

@@ -1,6 +1,6 @@
 # macOS release automation
 
-`.github/workflows/release-macos.yml` builds and publishes the Rust companion when a version tag such as `v0.3.0` is pushed. It also supports manual dispatch with an existing version tag. The tag's Cargo package version must match, and every build job checks out the same resolved commit.
+`.github/workflows/release-macos.yml` builds and publishes the Rust companion when a version tag such as `v0.3.1` is pushed. It also supports manual dispatch with an existing version tag. The tag's Cargo package version must match, and every build job checks out the same resolved commit.
 
 The matrix uses native Apple Silicon (`macos-15`, `aarch64-apple-darwin`) and Intel (`macos-15-intel`, `x86_64-apple-darwin`) runners. Each job runs formatting, ordinary tests and clippy, builds with Cargo.lock, packages its exact binary, checks its Mach-O architecture, and smoke-tests the executable extracted from the resulting archive. Live model tests remain opt-in and do not run in release CI.
 
@@ -20,8 +20,8 @@ Build jobs have read-only repository permissions. Only the final publish job rec
 Update Cargo.toml/Cargo.lock, the documented download version and release notes, then commit and push. Create the matching tag:
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.3.1
+git push origin v0.3.1
 ```
 
 The workflow creates the release; no local binary upload is required. Alternatively run the workflow manually with the same tag after it exists. Follow the Actions run and confirm the release assets/checksums before distributing the download link.

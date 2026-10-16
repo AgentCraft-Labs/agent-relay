@@ -134,14 +134,10 @@ pub fn native_selection(home: &Path, request: &RunRequest) -> Result<Value> {
 }
 
 pub fn catalog_entry(template: &Value, name: &str, profile: &Profile) -> Value {
-    let mut entry = template.clone();
-    entry["slug"] = json!(model_alias(name));
-    entry["display_name"] = json!(profile.display_name);
+    let mut entry =
+        crate::catalog::worker_entry(template, &model_alias(name), &profile.display_name);
     entry["base_instructions"] =
         json!("Execute only the prepared AgentRelay model profile assignment.");
-    entry["model_messages"] = Value::Null;
-    entry["tool_mode"] = json!("direct");
-    entry["multi_agent_version"] = json!("v2");
     // Only the prepared effort is advertised. UI edits to another effort fail
     // binding validation rather than silently disagreeing with the executor.
     if let Some(effort) = &profile.effort {

@@ -53,10 +53,10 @@ sequenceDiagram
 
 Download a prebuilt companion from [GitHub Releases](https://github.com/mapo80/agnet-relay/releases/latest). Rust is not required to run it. Choose `macos-arm64` for Apple Silicon or `macos-x86_64` for Intel. The companion is a terminal executable and optional background service; the interface remains the official Codex app.
 
-For version 0.3.0, download and verify the archive in Terminal:
+For version 0.3.1, download and verify the archive in Terminal:
 
 ```bash
-relay_version=0.3.0
+relay_version=0.3.1
 relay_arch=$(uname -m)
 relay_archive="agentrelay-v${relay_version}-macos-${relay_arch}.tar.gz"
 relay_url="https://github.com/mapo80/agnet-relay/releases/download/v${relay_version}"
@@ -247,6 +247,8 @@ flowchart LR
 ```
 
 Profiles are immutable: changing model, effort or label needs a new profile and agent. A different native picker setting is rejected when it disagrees with the prepared profile; changing the picker alone does not rewrite the external task. Generic runtime aliases remain available when no profile matches. `profile list` shows registered selections. Native catalog/thread fields are tested; the rendered top-right widget remains subject to the desktop visual-verification limitation below.
+
+AgentRelay runtime aliases and profiles are **hidden from the main conversation's model picker**. They remain registered for explicit native-agent delegation and model metadata lookup, with their names and effort preserved. They do not carry OpenAI's new-model announcements or upgrade recommendations. To refresh an older installation, run `codex configure` with the updated AgentRelay binary, then fully quit and reopen Codex so it reloads the catalog. Hiding a model is a presentation setting, not an access restriction; explicit model IDs still resolve.
 
 ### What appears in the agent detail
 

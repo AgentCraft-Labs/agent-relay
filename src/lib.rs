@@ -1,3 +1,4 @@
+pub mod catalog;
 pub mod codex;
 pub mod model;
 pub mod profiles;

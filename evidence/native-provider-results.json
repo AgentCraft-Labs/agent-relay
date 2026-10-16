@@ -1,19 +1,19 @@
 {
   "schema_version": 2,
-  "date": "2026-10-15",
-  "release": "0.3.0",
+  "date": "2026-10-16",
+  "release": "0.3.1",
   "official_binary": {
-    "version": "codex-cli 0.162.0-alpha.17.2",
+    "version": "codex-cli 0.163.0-alpha.10.2",
     "sha256": "50ab38ba21d0d9f8346f32f41848382f15b556190f3c7a07e885a4fb73e379c8",
     "modified": false
   },
   "ordinary_tests": {
     "passed": 25,
     "failed": 0,
-    "native_live_tests_ignored_by_default": 11
+    "native_live_tests_ignored_by_default": 12
   },
   "native_acceptance": {
-    "passed": 11,
+    "passed": 12,
     "failed": 0,
     "real_parent": true,
     "real_claude_cli": true,
@@ -35,10 +35,12 @@
     "parent_provider": "agentrelay",
     "child_model": "agentrelay-profile-haiku55_high",
     "official_app_read_thread_confirmed": true,
-    "official_app_navigation_succeeded": true,
     "full_task_and_real_result_recorded": true,
     "native_reasoning_effort": "high",
-    "native_model_profile": "haiku55_high"
+    "native_model_profile": "haiku55_high",
+    "hidden_workers_omitted_from_default_model_list": true,
+    "hidden_worker_metadata_available": true,
+    "worker_promotions_removed": true
   },
   "process_checks": {
     "http_disconnect_cancels_and_reaps_cli": true,
@@ -73,5 +75,17 @@
     "native_catalog_display_name": "Claude Haiku 5.5",
     "same_session_followup": true,
     "native_widget_visually_verified": false
+  },
+  "model_picker": {
+    "workers_hidden": true,
+    "default_model_list_excludes_workers": true,
+    "explicit_hidden_lookup_retains_metadata": true,
+    "worker_is_default": false,
+    "worker_new_model_announcement": null,
+    "worker_upgrade_recommendation": null,
+    "generic_native_spawn_passed": true,
+    "profile_native_spawn_and_followup_passed": true,
+    "existing_openai_entries_preserved": true,
+    "rendered_menu_visually_verified": false
   }
 }
