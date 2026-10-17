@@ -18,6 +18,7 @@ fn settings(home: &std::path::Path) -> Result<Openai> {
         listen: address(),
         backend: address(),
         codex_bin: std::env::current_exe()?,
+        additional_codex_bins: Vec::new(),
     };
     agent_relay::codex::atomic_write(
         &home.join(transport::FILE),
@@ -114,5 +115,116 @@ async fn bridge_bind_failure_terminates_backend_without_touching_foreign_listene
         TcpStream::connect(settings.listen).is_ok(),
         "Foreign listener was affected"
     );
+    Ok(())
+}
+
+#[test]
+fn previous_transport_manifest_defaults_to_no_additional_executables() -> Result<()> {
+    let settings: Openai = serde_json::from_value(serde_json::json!({
+        "schema_version": 1,
+        "listen": "127.0.0.1:39092", "backend": "127.0.0.1:39091",
+        "codex_bin": "/absolute/codex"
+    }))?;
+    settings.validate()?;
+    assert!(settings.additional_codex_bins.is_empty());
+    let mut invalid = settings;
+    invalid.additional_codex_bins.push("relative/codex".into());
+    assert!(invalid.validate().is_err());
+    Ok(())
+}
+
+#[test]
+fn unresolved_path_cli_stops_migration_before_any_configuration_change() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let cli = home.path().join("codex");
+    std::fs::write(&cli, "#!/usr/bin/env node\n// fixture launcher\n")?;
+    let codex_home = home.path().join("config");
+    std::fs::create_dir(&codex_home)?;
+    let config = codex_home.join("config.toml");
+    let original = "model_provider = \"agentrelay\"\n";
+    std::fs::write(&config, original)?;
+    let state = home.path().join("state");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_agentrelay"))
+        .arg("--home")
+        .arg(&state)
+        .args(["codex", "migrate", "--codex-home"])
+        .arg(&codex_home)
+        .arg("--codex-bin")
+        .arg(std::env::current_exe()?)
+        .env("PATH", home.path())
+        .output()?;
+    ensure!(!output.status.success());
+    ensure!(String::from_utf8_lossy(&output.stderr).contains("--also-codex-bin"));
+    assert_eq!(std::fs::read_to_string(config)?, original);
+    assert!(!state.exists());
+    assert!(!codex_home.join("config.before-openai-bridge.toml").exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn additional_executables_are_admitted_by_exact_path_without_breaking_primary() -> Result<()>
+{
+    let home = tempfile::tempdir()?;
+    let mut settings = settings(home.path())?;
+    // Deliberately authorize curl only in this isolated fixture. A copy of
+    // the primary test executable at another path must still be refused.
+    settings.additional_codex_bins =
+        vec!["/usr/bin/curl".into(), home.path().join("removed-codex")];
+    agent_relay::codex::atomic_write(
+        &home.path().join(transport::FILE),
+        &serde_json::to_vec(&settings)?,
+        false,
+    )?;
+    let mut process = start(home.path(), &settings).await?;
+    ready(home.path(), &settings).await?;
+    let url = format!("http://{}/responses", settings.listen);
+    let response = reqwest::Client::new().get(&url).send().await?;
+    assert_eq!(response.status(), 426);
+    let output = tokio::process::Command::new("/usr/bin/curl")
+        .args([
+            "--silent",
+            "--max-time",
+            "5",
+            "--output",
+            "/dev/null",
+            "--write-out",
+            "%{http_code}",
+            "--header",
+            "x-codex-pid: 1",
+            &url,
+        ])
+        .output()
+        .await?;
+    ensure!(output.status.success(), "Fixture curl failed");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "426");
+    let unlisted = home.path().join("unlisted-native-client");
+    std::fs::copy(std::env::current_exe()?, &unlisted)?;
+    let output = tokio::process::Command::new(&unlisted)
+        .args(["--exact", "transport_http_client_fixture", "--nocapture"])
+        .env("AGENTRELAY_ADMISSION_URL", &url)
+        .output()
+        .await?;
+    ensure!(
+        output.status.success(),
+        "Copied native client failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    ensure!(String::from_utf8_lossy(&output.stdout).contains("fixture_status=403"));
+    process.kill().await?;
+    process.wait().await?;
+    Ok(())
+}
+
+#[test]
+fn transport_http_client_fixture() -> Result<()> {
+    let Ok(url) = std::env::var("AGENTRELAY_ADMISSION_URL") else {
+        return Ok(());
+    };
+    let response = reqwest::blocking::Client::new()
+        .get(url)
+        .header("x-codex-pid", std::process::id())
+        .header("originator", "codex")
+        .send()?;
+    println!("fixture_status={}", response.status().as_u16());
     Ok(())
 }

@@ -18,6 +18,8 @@ pub struct Openai {
     pub listen: SocketAddr,
     pub backend: SocketAddr,
     pub codex_bin: PathBuf,
+    #[serde(default)]
+    pub additional_codex_bins: Vec<PathBuf>,
 }
 
 impl Openai {
@@ -37,7 +39,11 @@ impl Openai {
             "Distinct nonzero IPv4 loopback endpoints required"
         );
         ensure!(
-            self.codex_bin.is_absolute(),
+            self.codex_bin.is_absolute()
+                && self
+                    .additional_codex_bins
+                    .iter()
+                    .all(|path| path.is_absolute()),
             "Codex executable must be an absolute path"
         );
         Ok(())

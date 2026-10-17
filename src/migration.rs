@@ -213,6 +213,7 @@ mod tests {
             listen: "127.0.0.1:39102".parse().unwrap(),
             backend: "127.0.0.1:39101".parse().unwrap(),
             codex_bin: std::env::current_exe().unwrap(),
+            additional_codex_bins: Vec::new(),
         };
         (dir, home, codex, catalog, config)
     }

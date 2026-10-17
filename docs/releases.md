@@ -38,8 +38,10 @@ Version 0.3.3 also installs an independent macOS guardian before restarting the 
 
 Version 0.3.4 extends the guardian to verified process hangs and isolates serialized database/native-worker execution from parent HTTP handling. Recovery preserves persistent sessions but can interrupt a turn; follow-up remains explicit.
 
-## Built-in OpenAI transport (0.4.0)
+## Built-in OpenAI transport (0.4.1)
 
 After `codex upgrade --wait-idle`, run `codex migrate` while external workers are idle. It stages the dual-listener configuration, verifies readiness, and switches the user default to `openai`. Existing chats keep the legacy provider definition and authenticated listener. A failed activation restores previous settings/service; `codex rollback` restores routing fields while retaining later unrelated preferences. Upgrades preserve an already selected bridge mode. The companion remains one owned service process plus its independent periodic guardian.
 
 Rendered UI access is blocked by the computer-use host in local acceptance. Release notes distinguish tested backend/configuration behavior from screenshot verification.
+
+Version 0.4.1 adds exact-path admission for separately installed native Codex CLIs. Migration discovers a native PATH installation and accepts explicit `--also-codex-bin` targets. Invalid optional targets fail closed without disabling the desktop transport. The 0.4.0 release workflow was cancelled before publication after a live Homebrew CLI probe exposed its single-executable limitation.

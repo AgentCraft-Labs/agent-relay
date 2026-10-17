@@ -18,6 +18,30 @@ use std::{
 };
 
 #[test]
+fn executable_resolution_rejects_scripts_data_and_non_executable_files() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir()?;
+    let script = home.path().join("node-launcher");
+    std::fs::write(&script, "#!/usr/bin/env node\nconsole.log('codex');\n")?;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+    assert!(agent_relay::openai_bridge::executable(Some(&script)).is_err());
+    let data = home.path().join("data");
+    std::fs::write(&data, b"not a native executable")?;
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o755))?;
+    assert!(agent_relay::openai_bridge::executable(Some(&data)).is_err());
+    let native = home.path().join("native");
+    std::fs::copy(std::env::current_exe()?, &native)?;
+    std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o644))?;
+    assert!(agent_relay::openai_bridge::executable(Some(&native)).is_err());
+    std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o755))?;
+    assert_eq!(
+        agent_relay::openai_bridge::executable(Some(&native))?,
+        native.canonicalize()?
+    );
+    Ok(())
+}
+
+#[test]
 fn kernel_peer_requires_exact_executable_and_tcp_tuple() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let client = TcpStream::connect(listener.local_addr()?)?;

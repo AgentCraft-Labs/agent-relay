@@ -177,6 +177,9 @@ enum CodexCommand {
         catalog: Option<PathBuf>,
         #[arg(long)]
         codex_bin: Option<PathBuf>,
+        /// Additional native Codex executables; the native CLI on PATH is discovered too.
+        #[arg(long)]
+        also_codex_bin: Vec<PathBuf>,
         #[arg(long, default_value = "127.0.0.1:39091")]
         listen: std::net::SocketAddr,
         #[arg(long, default_value = "127.0.0.1:39092")]
@@ -271,16 +274,40 @@ async fn run(cli: Cli) -> Result<()> {
                     codex_home,
                     catalog,
                     codex_bin,
+                    also_codex_bin,
                     listen,
                     bridge_listen,
                 },
         } => {
             let codex_home = codex_home.unwrap_or_else(default_codex_home);
+            let primary = agent_relay::openai_bridge::executable(codex_bin.as_deref())?;
+            let mut additional = agent_relay::transport::load(&home)?
+                .map_or_else(Vec::new, |s| s.additional_codex_bins);
+            for path in &also_codex_bin {
+                additional.push(agent_relay::openai_bridge::executable(Some(path))?);
+            }
+            if let Some(path) = std::env::var_os("PATH").and_then(|value| {
+                std::env::split_paths(&value)
+                    .map(|dir| dir.join("codex"))
+                    .find(|path| path.is_file())
+            }) {
+                match agent_relay::openai_bridge::executable(Some(&path)) {
+                    Ok(path) => additional.push(path),
+                    Err(error) if also_codex_bin.is_empty() => anyhow::bail!(
+                        "Cannot resolve Codex CLI on PATH; pass --also-codex-bin with its actual native executable: {error:#}"
+                    ),
+                    Err(_) => {}
+                }
+            }
+            additional.retain(|path| path != &primary);
+            additional.sort();
+            additional.dedup();
             let settings = agent_relay::transport::Openai {
                 schema_version: 1,
                 listen: bridge_listen,
                 backend: listen,
-                codex_bin: agent_relay::openai_bridge::executable(codex_bin.as_deref())?,
+                codex_bin: primary,
+                additional_codex_bins: additional,
             };
             return agent_relay::migration::activate(
                 &home,

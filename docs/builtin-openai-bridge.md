@@ -2,7 +2,7 @@
 
 ## Outcome and status
 
-The macOS Rust bridge in version 0.4.0 lets the unmodified official Codex executable retain `model_provider = "openai"` while AgentRelay still runs genuine native CLI agents. The installed desktop account-menu code suppresses the provider row for that ID. No model name, account name, app bundle or native chat database is patched.
+The macOS Rust bridge in version 0.4.1 lets the unmodified official Codex executable retain `model_provider = "openai"` while AgentRelay still runs genuine native CLI agents. The installed desktop account-menu code suppresses the provider row for that ID. No model name, account name, app bundle or native chat database is patched.
 
 Activate the bridge explicitly with `agentrelay codex migrate` after installing/upgrading the companion. Installation retains the legacy mode until migration; later upgrades preserve the selected mode. `codex rollback` restores prior routing. Both changes require idle external workers. Migration preserves the legacy provider definition, native histories and external session bindings.
 
@@ -41,7 +41,9 @@ The built-in provider cannot attach AgentRelay's custom local header. Instead, t
 5. Reject browser `Origin` requests. HTTP process-name/PID headers never authorize a request.
 6. Replace any incoming local-key header with the key read from private AgentRelay state before contacting the backend.
 
-The desktop's `bin/codex` can be a shell launcher. The bridge resolves the known `CodexCLI.app/Contents/MacOS/codex` bundle layout; it does not execute or parse arbitrary shell scripts. Executable-path checks are not code-signature verification or an OS sandbox. As with the existing integration, processes controlling the user's private files are inside the trust boundary.
+The private transport manifest stores the primary desktop executable and an optional list of additional native Codex executables. Migration discovers the native `codex` on PATH and preserves explicitly registered entries. Each request must match one of their canonical executable paths and the exact socket tuple; knowing a PID, filename or HTTP header is insufficient. A removed or invalid optional executable is skipped without stopping the primary desktop transport. Rerun migration after upgrading an additional CLI. This prevents a Homebrew CLI or the AgentRelay `codex` runtime from being rejected merely because it differs from the desktop bundle.
+
+The desktop's `bin/codex` can be a shell launcher. The bridge resolves the known `CodexCLI.app/Contents/MacOS/codex` bundle layout; it does not execute or parse arbitrary shell scripts. Native targets must have Mach-O magic and executable permissions. For npm or another script launcher, supply its real native Codex target using repeatable `--also-codex-bin /absolute/native/codex`; unresolved PATH scripts stop migration before changing service/configuration unless an explicit target was provided. Never register the generic Node or shell interpreter. Executable-path checks are not code-signature verification or an OS sandbox. As with the existing integration, processes controlling the user's private files are inside the trust boundary.
 
 The bridge preserves streaming response status/headers and propagates downstream cancellation. It decodes built-in-provider Zstandard requests with a bounded decoded size. The backend still strips the private local header before forwarding normal requests to the fixed official HTTPS endpoint. The bridge refuses a backend whose `/version` does not advertise `native_checkpoints_v1`, including the previously released 0.3.4 provider. The guardian and installer require both version endpoints to respond and report the same PID.
 
@@ -66,6 +68,9 @@ The sanitized report records the ordinary checks, explicit native acceptance, in
 | Kernel ownership, exact executable and TCP tuple | Accepted matching socket; rejected mismatched executable/tuple |
 | Actual different executable with forged identity headers and known local key | HTTP 403; backend not called |
 | Browser Origin | HTTP 403 |
+| Multiple native executables | Primary and explicit secondary admitted; byte-identical unlisted copy denied |
+| Optional executable removed | Desktop listener stays healthy; missing entry cannot authorize requests |
+| Legacy transport manifest | Deserializes with an empty additional-executable list |
 | Zstandard, decoded size limit, headers and streaming | Passed |
 | Downstream cancellation | Backend response stream closed |
 | Haiku 5.5 high | Native execution and same-session follow-up passed |

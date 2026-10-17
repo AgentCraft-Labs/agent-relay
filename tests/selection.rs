@@ -245,7 +245,13 @@ fn runner_records_real_model_and_fails_when_cli_substitutes_it() {
     assert!(!output.status.success());
     let task = Store::open(&home).unwrap().list(None).unwrap().remove(0);
     assert_eq!(task.status, Status::Failed);
-    assert_eq!(task.actual_model.as_deref(), Some("claude-sonnet-5-5"));
+    assert_eq!(
+        task.actual_model.as_deref(),
+        Some("claude-sonnet-5-5"),
+        "Task error: {:?}; runner stderr: {}",
+        task.error,
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(task.error.as_deref().unwrap().contains("substituted model"));
     assert!(task.result.is_none());
 }

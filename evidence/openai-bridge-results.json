@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "date": "2026-10-17",
-  "status": "0.4.0 managed transport; activated locally",
+  "status": "0.4.1 managed transport; activated locally",
   "platform": "macOS arm64",
   "official_codex_version": "codex-cli 0.163.0-alpha.10.2",
   "official_codex_executable_sha256": "1afb28c01d7d49e892bd75f11076b10f1451e34e0ee308a95e5ab7f69f9c84fe",
-  "ordinary_checks_passed": 50,
+  "ordinary_checks_passed": 55,
   "native_acceptance_cases_passed": 23,
   "formatting": "passed",
   "clippy_warnings_denied": "passed",
@@ -144,7 +144,10 @@
     "legacy backend without checkpoint capability",
     "nonloopback listener or backend",
     "compaction cannot claim external execution",
-    "checkpoint root, child, model, reference and retry binding"
+    "checkpoint root, child, model, reference and retry binding",
+    "byte-identical native executable at an unlisted path",
+    "script, data and non-executable paths",
+    "unresolved PATH launcher aborts migration before settings/service mutation"
   ],
   "live_user_config_changed": true,
   "live_user_service_restarted": true,
@@ -155,9 +158,9 @@
     "in-flight bridge crash/recovery with active external work; no automatic task replay is claimed"
   ],
   "limitations": "macOS transport. Desktop backend history/navigation verified; rendered UI capture is denied by the host. Forced restart can interrupt active work; bindings and external sessions persist for explicit follow-up.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "historical_native_matrix": "all 13 historical cases rerun and passed",
-  "native_suite_seconds": 155.4,
+  "native_suite_seconds": 167.82,
   "installed_app_read": {
     "app_read_thread_succeeded": true,
     "completed_turns": 2,
@@ -166,20 +169,21 @@
     "computer_use_block": "Computer Use is not allowed to use com.openai.codex for safety reasons"
   },
   "installed_service_recovery": {
-    "version": "0.4.0",
+    "version": "0.4.1",
     "both_listeners_ready": true,
     "healthy_pid_preserved": true,
     "automatic_registration_recovery": true,
     "new_shared_pid": true,
-    "recovery_seconds": 2.67,
+    "recovery_seconds": 8.8,
     "native_workers_active_during_test": 0
   },
   "isolated_launchd": {
     "shared_process_freeze_recovery": true,
     "three_spaced_failures": true,
-    "recovery_seconds": 28.21,
+    "recovery_seconds": 28.2,
     "missing_registration_recovery": true,
-    "fixture_removed_on_exit": true
+    "fixture_removed_on_exit": true,
+    "suite_seconds": 28.81
   },
   "migration": {
     "legacy_native_chat_persisted": true,
@@ -197,6 +201,25 @@
     "installed Haiku 5.5 high native task and same-session follow-up",
     "installed app read_thread returned both completed turns and assignment/result",
     "installed app navigation to acceptance chat",
-    "shared-service listener PID agreement and bind-failure cleanup"
-  ]
+    "shared-service listener PID agreement and bind-failure cleanup",
+    "backward-compatible manifest defaults",
+    "primary desktop survives removal of an optional CLI",
+    "standalone Homebrew Codex and bundled Codex CLI",
+    "AgentRelay codex runtime initial execution and same-session resume"
+  ],
+  "cli_compatibility": {
+    "standalone_codex": true,
+    "standalone_version": "0.157.1",
+    "standalone_model": "gpt-5.6-sol",
+    "standalone_seconds": 5.61,
+    "bundled_cli": true,
+    "bundled_cli_model": "gpt-6.1-sol",
+    "older_cli_model_error_reproduced_without_bridge": true,
+    "codex_runtime_initial": true,
+    "codex_runtime_resume": true,
+    "same_external_session": true,
+    "total_seconds": 15.72
+  },
+  "ordinary_test_profile": "release",
+  "local_debug_retry_issue": "One model-substitution fixture failed to report a model; subsequent debug executable launches stalled before main in macOS dyld despite valid signatures. Private samples retained. Release-profile suite is checked separately; CI repeats ordinary debug checks on fresh runners."
 }

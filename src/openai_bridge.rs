@@ -94,7 +94,7 @@ mod macos {
     }
 
     struct Bridge {
-        executable: PathBuf,
+        executables: Vec<PathBuf>,
         local: SocketAddr,
         backend: SocketAddr,
         key: String,
@@ -106,6 +106,7 @@ mod macos {
         let mut magic = [0; 4];
         std::fs::File::open(&entry)?.read_exact(&mut magic)?;
         if &magic[..2] != b"#!" {
+            validate_native_executable(&entry, magic)?;
             return Ok(entry);
         }
         // The desktop distribution's bin/codex is a shell launcher. Resolve
@@ -130,7 +131,29 @@ mod macos {
             &magic[..2] != b"#!",
             "Codex bundle target must be an executable"
         );
+        validate_native_executable(&binary, magic)?;
         Ok(binary)
+    }
+
+    fn validate_native_executable(path: &Path, magic: [u8; 4]) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        ensure!(
+            [
+                [0xcf, 0xfa, 0xed, 0xfe],
+                [0xfe, 0xed, 0xfa, 0xcf],
+                [0xca, 0xfe, 0xba, 0xbe],
+                [0xbe, 0xba, 0xfe, 0xca],
+                [0xca, 0xfe, 0xba, 0xbf],
+                [0xbf, 0xba, 0xfe, 0xca]
+            ]
+            .contains(&magic),
+            "Expected a native Mach-O Codex executable, not an interpreter or data file"
+        );
+        ensure!(
+            std::fs::metadata(path)?.permissions().mode() & 0o111 != 0,
+            "Codex file is not executable"
+        );
+        Ok(())
     }
 
     async fn admit(state: &Arc<Bridge>, peer: SocketAddr, headers: &HeaderMap) -> Result<()> {
@@ -138,9 +161,18 @@ mod macos {
             !headers.contains_key("origin"),
             "Browser requests are not admitted"
         );
-        let executable = state.executable.clone();
+        let executables = state.executables.clone();
         let local = state.local;
-        tokio::task::spawn_blocking(move || verify_peer(peer, local, &executable)).await??;
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            ensure!(
+                executables
+                    .iter()
+                    .any(|path| verify_peer(peer, local, path).is_ok()),
+                "Connection is not owned by a configured Codex executable"
+            );
+            Ok(())
+        })
+        .await??;
         Ok(())
     }
 
@@ -240,9 +272,25 @@ mod macos {
         let listener = tokio::net::TcpListener::bind(address).await?;
         let local = listener.local_addr()?;
         ensure!(local != backend, "Bridge must not forward to itself");
+        let mut executables =
+            vec![resolve_executable(executable).context("Cannot resolve Codex executable")?];
+        if let Some(settings) = crate::transport::load(home)?
+            && settings.listen == local
+            && settings.backend == backend
+        {
+            for path in settings.additional_codex_bins {
+                match resolve_executable(&path) {
+                    Ok(path) => executables.push(path),
+                    // A removed/upgraded optional CLI must not take the desktop
+                    // transport down. Unresolved entries never authorize peers.
+                    Err(_) => eprintln!("Ignoring unavailable additional Codex executable"),
+                }
+            }
+        }
+        executables.sort();
+        executables.dedup();
         let state = Arc::new(Bridge {
-            executable: resolve_executable(executable)
-                .context("Cannot resolve Codex executable")?,
+            executables,
             local,
             backend,
             key: std::fs::read_to_string(home.join("provider.key"))?

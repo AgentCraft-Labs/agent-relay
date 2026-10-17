@@ -694,6 +694,7 @@ async fn probe(
                 listen: address,
                 backend: backend.parse()?,
                 codex_bin: PathBuf::from(&binary),
+                additional_codex_bins: Vec::new(),
             };
             agent_relay::codex::atomic_write(
                 &state.join(agent_relay::transport::FILE),

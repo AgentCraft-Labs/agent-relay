@@ -412,6 +412,7 @@ mod tests {
                 // Health-only fixture: keep its admitted executable beside
                 // the service, outside protected developer workspace folders.
                 codex_bin: executable.clone(),
+                additional_codex_bins: Vec::new(),
             };
             crate::codex::atomic_write(
                 &home.join(crate::transport::FILE),

@@ -2,7 +2,7 @@
 
 The Codex desktop account menu may show **AgentRelay** below the subscription name. The menu reads the active model provider from the local Codex configuration. This does not rename the OpenAI account, change its subscription or select Claude as the main conversation model.
 
-AgentRelay currently configures `model_provider = "agentrelay"` and the provider display name `AgentRelay`. A global provider is needed because native child agents inherit their parent's provider; a role-level provider override does not select a separate transport.
+The legacy installation configures `model_provider = "agentrelay"` and the provider display name `AgentRelay`. A global provider is needed because native child agents inherit their parent's provider; a role-level provider override does not select a separate transport.
 
 ## Verified behavior
 
@@ -29,7 +29,7 @@ No real model inference was used by the transport probe. The live Codex configur
 
 There is no supported configuration-only way to hide the row while retaining the current integration. An empty name falls back to the provider ID. Whitespace labels or a patched app bundle would depend on presentation tricks rather than a supported visibility setting.
 
-Changing just the provider ID or base URL is not a compatible migration. A separately implemented [built-in OpenAI bridge](builtin-openai-bridge.md) now demonstrates the alternative: macOS kernel socket-owner admission replaces the unavailable custom header at the first hop, while the existing private header remains required by the backend. Real native delegation, same-session follow-up, automatic compaction and bridge restart pass isolated tests. Version 0.4.0 integrates it into the managed service and guardian, with explicit migration/rollback commands.
+Changing just the provider ID or base URL is not a compatible migration. A separately implemented [built-in OpenAI bridge](builtin-openai-bridge.md) now demonstrates the alternative: macOS kernel socket-owner admission replaces the unavailable custom header at the first hop, while the existing private header remains required by the backend. Real native delegation, same-session follow-up, automatic compaction and bridge restart pass isolated tests. Version 0.4.1 integrates it into the managed service and guardian, with explicit migration/rollback commands.
 
 The bridge tests establish `openai` in the official parent's and child's thread data. Combined with the installed app's explicit `openai` rendering branch above, this verifies the mechanism for suppressing the row. It is not a screenshot of a migrated desktop session; the host blocks rendered UI access, so the release does not claim a screenshot.
 
