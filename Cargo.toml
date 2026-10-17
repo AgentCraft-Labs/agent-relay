@@ -1,6 +1,6 @@
 [package]
 name = "agent-relay"
-version = "0.3.4"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.95"
 description = "External CLI runtimes for native Codex agents"
@@ -28,6 +28,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io
 toml = "0.9"
 toml_edit = "0.23"
 uuid = { version = "1", features = ["v4", "serde"] }
+zstd = "0.13"
 
 [dev-dependencies]
 tempfile = "3"
@@ -35,3 +36,6 @@ tempfile = "3"
 [profile.release]
 lto = "thin"
 strip = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libproc = "0.14.11"

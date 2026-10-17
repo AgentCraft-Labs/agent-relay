@@ -28,6 +28,55 @@ fn request(root: &str, child: &str, turn: &str) -> serde_json::Value {
 }
 
 #[test]
+fn native_compaction_never_consumes_a_task_and_checkpoints_are_bound_and_durable() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("state");
+    let registry = Registry::open(&home).unwrap();
+    registry.prepare(&assignment(dir.path())).unwrap();
+    let mut compact = request("root-a", "child", "compact-turn");
+    compact["client_metadata"]["x-codex-turn-metadata"] = json!(
+        json!({
+        "agent_name":"/root/worker","sandbox_mode":"read-only","request_kind":"compaction",
+        "compaction":{"implementation":"responses_compaction_v2"}})
+        .to_string()
+    );
+    assert!(registry.claim(&compact).is_err());
+    let checkpoint = registry.checkpoint(&compact).unwrap();
+    assert_eq!(registry.checkpoint(&compact).unwrap(), checkpoint);
+    assert_eq!(
+        Registry::open(&home).unwrap().checkpoint(&compact).unwrap(),
+        checkpoint
+    );
+    assert!(Store::open(&home).unwrap().list(None).unwrap().is_empty());
+    for (root, child, model) in [
+        ("wrong-root", "child", "agentrelay-claude"),
+        ("root-a", "wrong-child", "agentrelay-claude"),
+        ("root-a", "child", "agentrelay-codex"),
+    ] {
+        let mut wrong = compact.clone();
+        wrong["client_metadata"]["session_id"] = json!(root);
+        wrong["client_metadata"]["thread_id"] = json!(child);
+        wrong["model"] = json!(model);
+        assert!(registry.checkpoint(&wrong).is_err());
+    }
+    let mut task = request("root-a", "child", "task-turn");
+    let mut forged = checkpoint.clone();
+    forged["encrypted_content"] = json!("agentrelay-checkpoint-v1:forged");
+    task["input"] = json!([forged]);
+    assert!(registry.claim(&task).is_err());
+    task["input"] = json!([checkpoint]);
+    let Delivery::Execute { claim, .. } = registry.claim(&task).unwrap() else {
+        panic!("Task was consumed by compaction")
+    };
+    assert_eq!(claim.task.generation, 1);
+    assert_eq!(claim.task.request.prompt, "Read the fixture");
+    Store::open(&home)
+        .unwrap()
+        .finish(&claim, Status::Completed, Some("fixture".into()), None)
+        .unwrap();
+}
+
+#[test]
 fn native_binding_rejects_wrong_root_path_runtime_and_duplicate_execution() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.path().join("state")).unwrap();

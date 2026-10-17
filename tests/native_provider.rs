@@ -138,6 +138,16 @@ fn serve(mut stream: TcpStream, state: &State) -> Result<()> {
     ensure!(length < 4_000_000, "Fixture body too large");
     let mut body = vec![0; length];
     reader.read_exact(&mut body)?;
+    if request_line.starts_with("GET /version ") {
+        let gateway = state
+            .gateway
+            .as_ref()
+            .context("No production provider for capability probe")?;
+        let response = reqwest::blocking::get(format!("{gateway}/version"))?
+            .error_for_status()?
+            .text()?;
+        return http(&mut stream, "application/json", &response);
+    }
     if !request_line.starts_with("POST ") {
         return http(&mut stream, "application/json", "{\"models\":[]}");
     }
@@ -161,7 +171,9 @@ fn serve(mut stream: TcpStream, state: &State) -> Result<()> {
             .build()?;
         let mut outgoing = client.post("https://chatgpt.com/backend-api/codex/responses");
         for (name, value) in headers {
-            outgoing = outgoing.header(name, value);
+            if !name.eq_ignore_ascii_case(agent_relay::provider::KEY_HEADER) {
+                outgoing = outgoing.header(name, value);
+            }
         }
         let response = outgoing.body(body).send()?;
         let status = response.status();
@@ -203,6 +215,14 @@ fn serve(mut stream: TcpStream, state: &State) -> Result<()> {
             response.text()?
         );
         let output = response.text()?;
+        let extra: Value = serde_json::from_str(
+            request["client_metadata"]["x-codex-turn-metadata"]
+                .as_str()
+                .unwrap_or("{}"),
+        )?;
+        if extra["request_kind"] == "compaction" {
+            return http(&mut stream, "text/event-stream", &output);
+        }
         let store = agent_relay::store::Store::open(&state.workspace.join("relay-state"))?;
         let task = store
             .list(None)?
@@ -544,6 +564,21 @@ async fn probe(
     plaintext: bool,
     override_provider: bool,
 ) -> Result<Value> {
+    let evidence_name = name;
+    let builtin_openai = name.starts_with("builtin-");
+    let name = name.strip_prefix("builtin-").unwrap_or(name);
+    let force_compaction = name.starts_with("compact-");
+    let name = name.strip_prefix("compact-").unwrap_or(name);
+    let restart_bridge = name.starts_with("restart-");
+    let name = name.strip_prefix("restart-").unwrap_or(name);
+    let integrated = name.starts_with("integrated-");
+    let name = name.strip_prefix("integrated-").unwrap_or(name);
+    let direct_backend = name.starts_with("direct-");
+    let name = name.strip_prefix("direct-").unwrap_or(name);
+    let parent_compact = name.starts_with("parentcompact-");
+    let name = name.strip_prefix("parentcompact-").unwrap_or(name);
+    let legacy_migration = name.starts_with("migration-");
+    let name = name.strip_prefix("migration-").unwrap_or(name);
     let binary = std::env::var("AGENTRELAY_CODEX_TEST_BIN")
         .context("Set the path to an official Codex executable")?;
     let temporary = tempfile::tempdir()?;
@@ -617,6 +652,87 @@ async fn probe(
     };
     let server = Server::start(create_state())?;
     let alternate = Server::start(create_state())?;
+    let mut bridge_process = None;
+    let bridge = if builtin_openai || legacy_migration {
+        let socket = TcpListener::bind("127.0.0.1:0")?;
+        let address = socket.local_addr()?;
+        drop(socket);
+        let backend = if direct_backend {
+            gateway.as_ref().context("Missing production provider")?
+        } else {
+            &server.address
+        }
+        .strip_prefix("http://")
+        .unwrap();
+        let mut process = tokio::process::Command::new(&relay)
+            .arg("--home")
+            .arg(workspace.join("relay-state"))
+            .args([
+                "serve-openai",
+                "--listen",
+                &address.to_string(),
+                "--backend",
+                backend,
+                "--codex-bin",
+                &binary,
+            ])
+            .stdout(std::fs::File::create(temporary.path().join("bridge.log"))?)
+            .stderr(std::fs::File::create(
+                temporary.path().join("bridge.stderr.log"),
+            )?)
+            .kill_on_drop(true)
+            .spawn()?;
+        if integrated {
+            process.kill().await?;
+            process.wait().await?;
+            let old = gateway_process.as_mut().context("Missing backend")?;
+            old.kill().await?;
+            old.wait().await?;
+            let state = workspace.join("relay-state");
+            let settings = agent_relay::transport::Openai {
+                schema_version: 1,
+                listen: address,
+                backend: backend.parse()?,
+                codex_bin: PathBuf::from(&binary),
+            };
+            agent_relay::codex::atomic_write(
+                &state.join(agent_relay::transport::FILE),
+                &serde_json::to_vec(&settings)?,
+                false,
+            )?;
+            *old = tokio::process::Command::new(&relay)
+                .arg("--home")
+                .arg(&state)
+                .args(["serve", "--listen", backend])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .spawn()?;
+        } else {
+            bridge_process = Some(process);
+        }
+        let url = format!("http://{address}");
+        let client = reqwest::Client::new();
+        for _ in 0..100 {
+            if client.get(format!("{url}/health")).send().await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        ensure!(
+            client
+                .post(format!("{url}/responses"))
+                .body("{}")
+                .send()
+                .await?
+                .status()
+                == 403,
+            "Untrusted test executable bypassed peer admission"
+        );
+        Some(url)
+    } else {
+        None
+    };
     let mut catalog = models(&root_model)?;
     if let Some(family) = profile_family(name) {
         let profile_name = format!("{family}55_high");
@@ -631,14 +747,11 @@ async fn probe(
             },
         )?;
         let template = catalog["models"][0].clone();
-        catalog["models"]
-            .as_array_mut()
-            .unwrap()
-            .push(agent_relay::profiles::catalog_entry(
-                &template,
-                &profile_name,
-                &profile,
-            ));
+        let mut entry = agent_relay::profiles::catalog_entry(&template, &profile_name, &profile);
+        if force_compaction {
+            entry["auto_compact_token_limit"] = json!(0);
+        }
+        catalog["models"].as_array_mut().unwrap().push(entry);
         std::fs::write(
             home.join(format!("agents/agentrelay_profile_{profile_name}.toml")),
             agent_relay::profiles::role_document(&profile_name, &profile)?,
@@ -664,6 +777,28 @@ async fn probe(
         server.address,
         alternate.address
     );
+    let config = if legacy_migration {
+        config
+            .replace(
+                "model_provider = \"fixture\"",
+                "model_provider = \"agentrelay\"",
+            )
+            .replace("[model_providers.fixture]", "[model_providers.agentrelay]")
+    } else {
+        config
+    };
+    let legacy_config = config.clone();
+    let config = if let Some(bridge) = bridge.as_ref().filter(|_| !legacy_migration) {
+        format!(
+            "openai_base_url = {bridge:?}\n{}",
+            config.replace(
+                "model_provider = \"fixture\"",
+                "model_provider = \"openai\""
+            )
+        )
+    } else {
+        config
+    };
     std::fs::write(home.join("config.toml"), config)?;
     if live_parent {
         let normal_home = std::env::var_os("CODEX_HOME")
@@ -676,6 +811,11 @@ async fn probe(
         );
         #[cfg(unix)]
         std::os::unix::fs::symlink(auth, home.join("auth.json"))?;
+    } else if builtin_openai || legacy_migration {
+        std::fs::write(
+            home.join("auth.json"),
+            r#"{"OPENAI_API_KEY":"fixture-not-a-real-key","auth_mode":"apikey"}"#,
+        )?;
     }
     let stderr = temporary.path().join("app-server.log");
     let outcome=async {
@@ -692,6 +832,7 @@ async fn probe(
         let developer=if live_parent {"This is a native delegation acceptance test. A bound plaintext handoff is already prepared for /root/claude_worker. You must call collaboration.spawn_agent exactly once with task_name claude_worker, agent_type claude_direct, fork_turns none, and a short message saying to use the prepared handoff. Do not create a Codex supervisor or solve the task yourself. Wait for the child result, then report it. Do not use shell or other tools."}else{"Do not use tools except the scripted collaboration tools."};
         let started=client.rpc("thread/start",json!({"model":root_model,"cwd":workspace,"approvalPolicy":"never","sandbox":"read-only","baseInstructions":"Follow the explicit test task.","developerInstructions":developer})).await?;
         let root=started["thread"]["id"].as_str().context("Root thread ID")?.to_owned();
+        if builtin_openai { ensure!(started["thread"]["modelProvider"]=="openai", "Built-in provider identity was not retained"); }
         if name.starts_with("prepared-") || production {
             let prompt_file=workspace.join("explicit-handoff.txt");std::fs::write(&prompt_file,TASK)?;
             let root_binding=if name=="prepared-wrong-root" {"unrelated-root"}else{&root};
@@ -713,15 +854,90 @@ async fn probe(
             client.notifications.push(event);
             if completed {break;}
         }
+        let mut migration_new_provider=Value::Null;
+        if legacy_migration {
+            ensure!(started["thread"]["modelProvider"]=="agentrelay");
+            client.child.kill().await?;client.child.wait().await?;
+            let updated=format!("openai_base_url = {:?}\n{}",bridge.as_ref().unwrap(),
+                legacy_config.replace("model_provider = \"agentrelay\"","model_provider = \"openai\""));
+            std::fs::write(home.join("config.toml"),updated)?;
+            let prior=std::mem::take(&mut client.notifications);
+            client=Client::start(&binary,&home,&temporary.path().join("resumed.stderr.log")).await?;
+            client.notifications.extend(prior);
+            let resumed=client.rpc("thread/resume",json!({"threadId":root,"cwd":workspace})).await?;
+            ensure!(resumed["thread"]["id"]==root,"Migration replaced the existing root");
+            let fresh=client.rpc("thread/start",json!({"model":PARENT,"cwd":workspace,"approvalPolicy":"never","sandbox":"read-only"})).await?;
+            migration_new_provider=fresh["thread"]["modelProvider"].clone();
+            server.state.root_calls.store(2,Ordering::SeqCst);
+            client.rpc("turn/start",json!({"threadId":root,"input":[{"type":"text","text":"Continue the existing native agent after configuration migration."}]})).await?;
+            loop {
+                let event=client.next().await?;
+                let done=event["method"]=="turn/completed" && event["params"]["threadId"]==root;
+                client.notifications.push(event);
+                if done {break;}
+            }
+        }
+        if restart_bridge {
+            let process=bridge_process.as_mut().context("Missing bridge process")?;
+            process.kill().await?;
+            process.wait().await?;
+            let url=bridge.as_ref().unwrap();
+            let address=url.strip_prefix("http://").unwrap();
+            let backend=server.address.strip_prefix("http://").unwrap();
+            *process=tokio::process::Command::new(&relay).arg("--home").arg(workspace.join("relay-state"))
+                .args(["serve-openai","--listen",address,"--backend",backend,"--codex-bin",&binary])
+                .stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true).spawn()?;
+            let transport=reqwest::Client::new();
+            for _ in 0..100 {
+                if transport.get(format!("{url}/health")).send().await.is_ok() {break;}
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            server.state.root_calls.store(2,Ordering::SeqCst);
+            client.rpc("turn/start",json!({"threadId":root,"input":[{"type":"text","text":"Resume the existing agent after the bridge restart."}]})).await?;
+            loop {
+                let event=client.next().await?;
+                let done=event["method"]=="turn/completed" && event["params"]["threadId"]==root;
+                client.notifications.push(event);
+                if done {break;}
+            }
+        }
+        let mut parent_compaction=Value::Null;
+        if parent_compact {
+            let account=client.rpc("account/read",json!({"refreshToken":false})).await?;
+            ensure!(account["account"]["type"]=="chatgpt","Normal ChatGPT account was not available");
+            let limits=client.rpc("account/rateLimits/read",json!({})).await?;
+            ensure!(!limits.is_null(),"Normal account rate limit API failed");
+            client.rpc("thread/compact/start",json!({"threadId":root})).await?;
+            loop {
+                let event=client.next().await?;
+                let done=event["method"]=="turn/completed" && event["params"]["threadId"]==root;
+                if done {parent_compaction=event.clone();}
+                client.notifications.push(event);
+                if done {break;}
+            }
+        }
+        if direct_backend {
+            let store=agent_relay::store::Store::open(&workspace.join("relay-state"))?;
+            let tasks=store.list(None)?;
+            server.state.claude_calls.store(tasks.len(),Ordering::SeqCst);
+            for task in tasks {server.state.runtime_results.lock().unwrap().push(agent_relay::runner::summary(&task));}
+        }
         let parent=client.rpc("thread/read",json!({"threadId":root,"includeTurns":true})).await?;
         let child_id=client.notifications.iter().filter_map(|event|event.pointer("/params/item"))
             .find(|item|item["type"]=="subAgentActivity" && item["kind"]=="started")
             .and_then(|item|item["agentThreadId"].as_str()).map(str::to_owned);
+        let compaction = client.notifications.iter().filter(|event|
+            event["method"]=="item/completed" && event["params"]["item"]["type"]=="contextCompaction")
+            .cloned().collect::<Vec<_>>();
         let child=if let Some(id)=&child_id {Some(client.rpc("thread/read",json!({"threadId":id,"includeTurns":true})).await?)}else{None};
-        let result=json!({"case":name,"official_binary":binary,"root_thread_id":root,"child_thread_id":child_id,"parent":parent,"child":child,"model_catalog":model_catalog,"picker_catalog":picker_catalog,"notifications":client.notifications,"provider_requests":server.state.requests.lock().unwrap().clone(),"alternate_provider_requests":alternate.state.requests.lock().unwrap().clone(),"claude_cli_invocations":server.state.claude_calls.load(Ordering::SeqCst),"runtime_results":server.state.runtime_results.lock().unwrap().clone(),"role_command_executed":marker.exists(),"root_inference":if live_parent {"Real authenticated OpenAI parent via official HTTPS upstream"}else{"scripted local fixture; no OpenAI inference"},"upstream_statuses":server.state.forward_statuses.lock().unwrap().clone(),"user_configuration_modified":false,"codex_binary_recompiled":false});
+        let result=json!({"case":name,"parent_compaction":parent_compaction,"builtin_openai_bridge":builtin_openai,"integrated_service":integrated,"migration_new_provider":migration_new_provider,"direct_production_backend":direct_backend,"compaction":compaction,"official_binary":binary,"root_thread_id":root,"child_thread_id":child_id,"parent":parent,"child":child,"model_catalog":model_catalog,"picker_catalog":picker_catalog,"notifications":client.notifications,"provider_requests":server.state.requests.lock().unwrap().clone(),"alternate_provider_requests":alternate.state.requests.lock().unwrap().clone(),"claude_cli_invocations":server.state.claude_calls.load(Ordering::SeqCst),"runtime_results":server.state.runtime_results.lock().unwrap().clone(),"role_command_executed":marker.exists(),"root_inference":if live_parent {"Real authenticated OpenAI parent via official HTTPS upstream"}else{"scripted local fixture; no OpenAI inference"},"upstream_statuses":server.state.forward_statuses.lock().unwrap().clone(),"user_configuration_modified":false,"codex_binary_recompiled":false});
         client.child.kill().await?;
         Ok::<_,anyhow::Error>(result)
     }.await;
+    if let Some(mut child) = bridge_process {
+        child.kill().await?;
+        child.wait().await?;
+    }
     if let Some(mut child) = gateway_process {
         child.kill().await?;
         child.wait().await?;
@@ -732,10 +948,13 @@ async fn probe(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evidence/private/native-provider")
         });
     std::fs::create_dir_all(&evidence)?;
-    std::fs::copy(&stderr, evidence.join(format!("{name}.stderr.log")))?;
+    std::fs::copy(
+        &stderr,
+        evidence.join(format!("{evidence_name}.stderr.log")),
+    )?;
     if let Ok(result) = &outcome {
         std::fs::write(
-            evidence.join(format!("{name}.json")),
+            evidence.join(format!("{evidence_name}.json")),
             serde_json::to_vec_pretty(result)?,
         )?;
     }
@@ -1151,6 +1370,182 @@ async fn product_opus_55_high_is_selected_and_visible_in_native_thread() -> Resu
     verify_selected_profile(&result, "opus", "Claude Opus 5.5")
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "Opt-in built-in OpenAI bridge: real Haiku native agent and same-session follow-up"]
+async fn builtin_openai_bridge_preserves_haiku_profile_and_session() -> Result<()> {
+    let result = probe("builtin-product-haiku-high", true, false, false).await?;
+    verify_selected_profile(&result, "haiku", "Claude Haiku 5.5")?;
+    ensure!(result["child"]["thread"]["modelProvider"] == "openai");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "Opt-in built-in OpenAI bridge: real Opus native agent and same-session follow-up"]
+async fn builtin_openai_bridge_preserves_opus_profile_and_session() -> Result<()> {
+    let result = probe("builtin-product-opus-high", true, false, false).await?;
+    verify_selected_profile(&result, "opus", "Claude Opus 5.5")?;
+    ensure!(result["child"]["thread"]["modelProvider"] == "openai");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "Opt-in built-in OpenAI bridge: authenticated OpenAI parent and real native Claude child"]
+async fn builtin_openai_bridge_real_parent_delegates_to_claude() -> Result<()> {
+    let result = probe("builtin-real-openai-parent", true, false, false).await?;
+    verify_native_answer(&result, "NATIVE_CLAUDE_SUM=73")?;
+    ensure!(result["parent"]["thread"]["modelProvider"] == "openai");
+    ensure!(
+        result["claude_cli_invocations"] == 1,
+        "Unexpected extra external inference"
+    );
+    ensure!(
+        result["provider_requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|request| request["model"] != CHILD)
+            .all(|request| request["client_metadata"]["thread_id"] == result["root_thread_id"]),
+        "An extra OpenAI inference originated in a child"
+    );
+    ensure!(
+        result["upstream_statuses"]
+            .as_array()
+            .is_some_and(|s| !s.is_empty() && s.iter().all(|s| s == 200))
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "Opt-in built-in OpenAI bridge: real parent and child directly through the production provider"]
+async fn builtin_openai_bridge_direct_production_parent_and_child() -> Result<()> {
+    let result = probe("builtin-direct-real-openai-parent", true, false, false).await?;
+    verify_native_answer(&result, "NATIVE_CLAUDE_SUM=73")?;
+    ensure!(
+        result["provider_requests"].as_array().unwrap().is_empty(),
+        "Traffic unexpectedly used the scripted fixture"
+    );
+    ensure!(
+        result["claude_cli_invocations"] == 1
+            && result["runtime_results"][0]["status"] == "completed",
+        "Expected one completed external task"
+    );
+    ensure!(
+        result["parent"]["thread"]["modelProvider"] == "openai"
+            && result["child"]["thread"]["modelProvider"] == "openai"
+    );
+    ensure!(
+        result["parent"]["thread"]["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|turn| turn["status"] == "completed"),
+        "Real parent turn failed"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "Real authenticated parent and Claude native child through the shared service process"]
+async fn integrated_service_real_parent_and_child() -> Result<()> {
+    let result = probe(
+        "builtin-integrated-direct-real-openai-parent",
+        true,
+        false,
+        false,
+    )
+    .await?;
+    verify_native_answer(&result, "NATIVE_CLAUDE_SUM=73")?;
+    ensure!(result["integrated_service"] == true && result["claude_cli_invocations"] == 1);
+    ensure!(
+        result["parent"]["thread"]["modelProvider"] == "openai"
+            && result["child"]["thread"]["modelProvider"] == "openai"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "Opt-in bridge restart: preserve native child and resume the same real Claude session"]
+async fn builtin_openai_bridge_restart_preserves_existing_agent() -> Result<()> {
+    let result = probe("builtin-restart-product-haiku-high", true, false, false).await?;
+    verify_native_answer(&result, "NATIVE_CLAUDE_SUM=73")?;
+    verify_native_answer(&result, "NATIVE_CLAUDE_DOUBLED=146")?;
+    let turns = result["runtime_results"]
+        .as_array()
+        .context("Missing external results")?;
+    ensure!(
+        turns.len() == 3,
+        "Expected initial execution, follow-up and post-restart follow-up"
+    );
+    for (index, turn) in turns.iter().enumerate() {
+        ensure!(
+            turn["task_id"] == turns[0]["task_id"]
+                && turn["session_id"] == turns[0]["session_id"]
+                && turn["generation"] == index + 1
+                && turn["model"] == "claude-haiku-5-5"
+                && turn["requested_effort"] == "high",
+            "Restart lost external identity or selection"
+        );
+    }
+    ensure!(result["child"]["thread"]["modelProvider"] == "openai");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "Resume a persisted legacy chat/agent after switching global provider to OpenAI"]
+async fn legacy_chat_and_child_resume_after_provider_migration() -> Result<()> {
+    let result = probe("migration-product-haiku-high", true, false, false).await?;
+    verify_native_answer(&result, "NATIVE_CLAUDE_SUM=73")?;
+    verify_native_answer(&result, "NATIVE_CLAUDE_DOUBLED=146")?;
+    ensure!(result["migration_new_provider"] == "openai");
+    let turns = result["runtime_results"]
+        .as_array()
+        .context("Missing external turns")?;
+    ensure!(turns.len() == 3, "Persisted child did not resume");
+    ensure!(
+        turns
+            .iter()
+            .all(|turn| turn["session_id"] == turns[0]["session_id"]
+                && turn["task_id"] == turns[0]["task_id"]),
+        "Provider migration changed the external session"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "Opt-in built-in OpenAI bridge: force native compaction, then resume the same real Claude session"]
+async fn builtin_openai_bridge_compaction_preserves_external_session() -> Result<()> {
+    let result = probe("builtin-compact-product-haiku-high", true, false, false).await?;
+    ensure!(
+        result["compaction"]
+            .as_array()
+            .is_some_and(|events| !events.is_empty()),
+        "No completed native compaction; inspect private evidence"
+    );
+    verify_selected_profile(&result, "haiku", "Claude Haiku 5.5")?;
+    let turns = result["runtime_results"]
+        .as_array()
+        .context("Missing external results")?;
+    ensure!(
+        turns.len() == 2,
+        "Compaction launched an extra CLI turn or follow-up did not execute"
+    );
+    ensure!(
+        turns
+            .iter()
+            .all(|turn| turn["session_id"] == turns[0]["session_id"]),
+        "Compaction replaced the external session"
+    );
+    Ok(())
+}
+
 fn verify_selected_profile(result: &Value, family: &str, display_name: &str) -> Result<()> {
     let external_model = format!("claude-{family}-5-5");
     let native_id = format!("agentrelay-profile-{family}55_high");
@@ -1217,5 +1612,165 @@ fn verify_selected_profile(result: &Value, family: &str, display_name: &str) -> 
             && followup["session_id"] == observed["session_id"],
         "Follow-up changed external identity"
     );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "Real parent compaction plus account and usage APIs through the integrated service"]
+async fn integrated_service_parent_compaction_and_account_apis() -> Result<()> {
+    let result = probe(
+        "builtin-integrated-direct-parentcompact-real-openai-parent",
+        true,
+        false,
+        false,
+    )
+    .await?;
+    verify_native_answer(&result, "NATIVE_CLAUDE_SUM=73")?;
+    ensure!(
+        result["parent_compaction"]["params"]["turn"]["status"] == "completed",
+        "Normal parent compaction failed"
+    );
+    ensure!(
+        result["claude_cli_invocations"] == 1,
+        "Parent compaction launched an extra CLI turn"
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "Installed user integration acceptance: creates one real test chat and Haiku native child in the app's normal state"]
+async fn installed_openai_service_native_chat_and_followup() -> Result<()> {
+    let binary = std::env::var("AGENTRELAY_CODEX_TEST_BIN")?;
+    let user = PathBuf::from(std::env::var_os("HOME").context("Missing home")?);
+    let home = user.join(".codex");
+    let registry = user.join(".local/state/agentrelay");
+    let config: toml::Value = toml::from_str(&std::fs::read_to_string(home.join("config.toml"))?)?;
+    ensure!(
+        config["model_provider"].as_str() == Some("openai"),
+        "Activate the installed bridge first"
+    );
+    let settings =
+        agent_relay::transport::load(&registry)?.context("Installed bridge is missing")?;
+    ensure!(agent_relay::transport::healthy(
+        &registry,
+        settings.backend
+    )?);
+    let evidence = PathBuf::from(
+        std::env::var_os("AGENTRELAY_TEST_EVIDENCE").context("Set a private evidence directory")?,
+    );
+    std::fs::create_dir_all(&evidence)?;
+    let workspace = tempfile::tempdir()?;
+    std::fs::write(workspace.path().join("numbers.txt"), "19, 23, 31\n")?;
+    let mut client = Client::start(&binary, &home, &evidence.join("installed.stderr.log")).await?;
+    let model = config["model"].as_str().unwrap_or("gpt-6.1-sol");
+    let started=client.rpc("thread/start",json!({"model":model,"cwd":workspace.path(),"approvalPolicy":"never","sandbox":"read-only",
+        "baseInstructions":"Follow the acceptance task exactly. Do not read unrelated files.",
+        "developerInstructions":"This is an AgentRelay installed-service acceptance test. A plaintext assignment is already prepared for /root/claude_worker. On the first turn, call collaboration.spawn_agent exactly once with task_name claude_worker, agent_type agentrelay_profile_haiku55_high, fork_turns none, and message Use the prepared assignment. Wait for its actual result. On later turns use collaboration.followup_task for that same agent and wait. Do not run shell commands or solve the task yourself. Report the child's actual answer."})).await?;
+    let root = started["thread"]["id"]
+        .as_str()
+        .context("Missing root")?
+        .to_owned();
+    ensure!(started["thread"]["modelProvider"] == "openai");
+    let relay = user.join(".agents/skills/agentrelay/scripts/agentrelay");
+    for (index, prompt) in [TASK, FOLLOWUP].into_iter().enumerate() {
+        let file = workspace.path().join("assignment.txt");
+        std::fs::write(&file, prompt)?;
+        let output = std::process::Command::new(&relay)
+            .arg("--home")
+            .arg(&registry)
+            .args([
+                "prepare",
+                "--runtime",
+                "claude",
+                "--model",
+                "Haiku 5.5",
+                "--effort",
+                "high",
+                "--root-id",
+                &root,
+                "--agent-path",
+                "/root/claude_worker",
+                "--timeout-seconds",
+                "60",
+                "--workspace",
+            ])
+            .arg(workspace.path())
+            .arg("--prompt-file")
+            .arg(file)
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "Installed preflight failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        client.rpc("turn/start",json!({"threadId":root,"input":[{"type":"text","text":if index==0{"Execute the prepared task with the native Haiku agent."}else{"Follow up the same claude_worker with the new prepared assignment. Do not spawn another agent."}}]})).await?;
+        loop {
+            let event = client.next().await?;
+            let done = event["method"] == "turn/completed" && event["params"]["threadId"] == root;
+            let successful = !done || event["params"]["turn"]["status"] == "completed";
+            client.notifications.push(event);
+            ensure!(successful, "Installed parent turn failed");
+            if done {
+                break;
+            }
+        }
+    }
+    let child_id = client
+        .notifications
+        .iter()
+        .filter_map(|n| n.pointer("/params/item"))
+        .find(|i| i["type"] == "subAgentActivity" && i["kind"] == "started")
+        .and_then(|i| i["agentThreadId"].as_str())
+        .context("No installed native child")?
+        .to_owned();
+    let child = client
+        .rpc(
+            "thread/read",
+            json!({"threadId":child_id,"includeTurns":true}),
+        )
+        .await?;
+    ensure!(
+        child["thread"]["modelProvider"] == "openai"
+            && child["thread"]["model"] == "agentrelay-profile-haiku55_high"
+            && child["thread"]["reasoningEffort"] == "high"
+    );
+    for answer in ["NATIVE_CLAUDE_SUM=73", "NATIVE_CLAUDE_DOUBLED=146"] {
+        ensure!(
+            child["thread"]["turns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|turn| turn["status"] == "completed"
+                    && turn["items"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|item| item["type"] == "agentMessage"
+                            && item["text"]
+                                .as_str()
+                                .is_some_and(|text| text.ends_with(answer)))),
+            "Installed native result is missing"
+        );
+    }
+    let tasks = agent_relay::store::Store::open(&registry)?.list(Some(&root))?;
+    ensure!(
+        tasks.len() == 1
+            && tasks[0].generation == 2
+            && tasks[0].actual_model.as_deref() == Some("claude-haiku-5-5")
+    );
+    let account = client
+        .rpc("account/read", json!({"refreshToken":false}))
+        .await?;
+    ensure!(account["account"]["type"] == "chatgpt");
+    client.rpc("account/rateLimits/read", json!({})).await?;
+    std::fs::write(
+        evidence.join("installed.json"),
+        serde_json::to_vec_pretty(&json!({"root_thread_id":root,"child_thread_id":child_id,
+        "child":child,"native_provider":"openai","observed_model":tasks[0].actual_model,"external_generations":2,"account_api":true,"rate_limits_api":true,"rendered_ui_verified":false}))?,
+    )?;
+    client.child.kill().await?;
+    client.child.wait().await?;
     Ok(())
 }

@@ -5,6 +5,7 @@
 !/evidence/native-provider-results.json
 !/evidence/service-recovery-results.json
 !/evidence/provider-availability-results.json
+!/evidence/openai-bridge-results.json
 *.sqlite*
 /.agents/
 /.codex/

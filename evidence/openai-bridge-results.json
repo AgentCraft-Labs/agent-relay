@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-17",
+  "status": "0.4.0 managed transport; activated locally",
+  "platform": "macOS arm64",
+  "official_codex_version": "codex-cli 0.163.0-alpha.10.2",
+  "official_codex_executable_sha256": "1afb28c01d7d49e892bd75f11076b10f1451e34e0ee308a95e5ab7f69f9c84fe",
+  "ordinary_checks_passed": 50,
+  "native_acceptance_cases_passed": 23,
+  "formatting": "passed",
+  "clippy_warnings_denied": "passed",
+  "ui_helper_cases": {
+    "configured_name": "AgentRelay",
+    "empty_name": "agentrelay",
+    "missing_name": "agentrelay",
+    "builtin_openai": null
+  },
+  "cases": [
+    {
+      "test": "builtin-product-haiku-high",
+      "passed": true,
+      "native_provider": "openai",
+      "external_turns": 2,
+      "observed_models": [
+        "claude-haiku-5-5"
+      ],
+      "requested_efforts": [
+        "high"
+      ],
+      "same_external_task": true,
+      "same_external_session": true,
+      "completed_native_compactions": 0,
+      "direct_production_backend": false,
+      "native_worker_request_kinds": [
+        "turn",
+        "turn"
+      ]
+    },
+    {
+      "test": "builtin-product-opus-high",
+      "passed": true,
+      "native_provider": "openai",
+      "external_turns": 2,
+      "observed_models": [
+        "claude-opus-5-5"
+      ],
+      "requested_efforts": [
+        "high"
+      ],
+      "same_external_task": true,
+      "same_external_session": true,
+      "completed_native_compactions": 0,
+      "direct_production_backend": false,
+      "native_worker_request_kinds": [
+        "turn",
+        "turn"
+      ]
+    },
+    {
+      "test": "builtin-real-openai-parent",
+      "passed": true,
+      "native_provider": "openai",
+      "external_turns": 1,
+      "observed_models": [
+        "claude-opus-5-5"
+      ],
+      "requested_efforts": [
+        "runtime default"
+      ],
+      "same_external_task": true,
+      "same_external_session": true,
+      "completed_native_compactions": 0,
+      "direct_production_backend": false,
+      "native_worker_request_kinds": [
+        "turn"
+      ]
+    },
+    {
+      "test": "builtin-direct-real-openai-parent",
+      "passed": true,
+      "native_provider": "openai",
+      "external_turns": 1,
+      "observed_models": [
+        "claude-opus-5-5"
+      ],
+      "requested_efforts": [
+        "runtime default"
+      ],
+      "same_external_task": true,
+      "same_external_session": true,
+      "completed_native_compactions": 0,
+      "direct_production_backend": true,
+      "native_worker_request_kinds": []
+    },
+    {
+      "test": "builtin-compact-product-haiku-high",
+      "passed": true,
+      "native_provider": "openai",
+      "external_turns": 2,
+      "observed_models": [
+        "claude-haiku-5-5"
+      ],
+      "requested_efforts": [
+        "high"
+      ],
+      "same_external_task": true,
+      "same_external_session": true,
+      "completed_native_compactions": 2,
+      "direct_production_backend": false,
+      "native_worker_request_kinds": [
+        "compaction",
+        "turn",
+        "compaction",
+        "turn"
+      ]
+    },
+    {
+      "test": "builtin-restart-product-haiku-high",
+      "passed": true,
+      "native_provider": "openai",
+      "external_turns": 3,
+      "observed_models": [
+        "claude-haiku-5-5"
+      ],
+      "requested_efforts": [
+        "high"
+      ],
+      "same_external_task": true,
+      "same_external_session": true,
+      "completed_native_compactions": 0,
+      "direct_production_backend": false,
+      "native_worker_request_kinds": [
+        "turn",
+        "turn",
+        "turn"
+      ]
+    }
+  ],
+  "negative_controls": [
+    "different executable despite known key and forged identity headers",
+    "wrong executable and reverse TCP tuple",
+    "browser Origin",
+    "oversized Zstandard decoded body",
+    "legacy backend without checkpoint capability",
+    "nonloopback listener or backend",
+    "compaction cannot claim external execution",
+    "checkpoint root, child, model, reference and retry binding"
+  ],
+  "live_user_config_changed": true,
+  "live_user_service_restarted": true,
+  "official_app_modified": false,
+  "rendered_ui_verified": false,
+  "remaining_acceptance": [
+    "rendered account menu screenshot; computer-use host denies com.openai.codex",
+    "in-flight bridge crash/recovery with active external work; no automatic task replay is claimed"
+  ],
+  "limitations": "macOS transport. Desktop backend history/navigation verified; rendered UI capture is denied by the host. Forced restart can interrupt active work; bindings and external sessions persist for explicit follow-up.",
+  "version": "0.4.0",
+  "historical_native_matrix": "all 13 historical cases rerun and passed",
+  "native_suite_seconds": 155.4,
+  "installed_app_read": {
+    "app_read_thread_succeeded": true,
+    "completed_turns": 2,
+    "full_assignment_and_results": true,
+    "rendered_screenshot": false,
+    "computer_use_block": "Computer Use is not allowed to use com.openai.codex for safety reasons"
+  },
+  "installed_service_recovery": {
+    "version": "0.4.0",
+    "both_listeners_ready": true,
+    "healthy_pid_preserved": true,
+    "automatic_registration_recovery": true,
+    "new_shared_pid": true,
+    "recovery_seconds": 2.67,
+    "native_workers_active_during_test": 0
+  },
+  "isolated_launchd": {
+    "shared_process_freeze_recovery": true,
+    "three_spaced_failures": true,
+    "recovery_seconds": 28.21,
+    "missing_registration_recovery": true,
+    "fixture_removed_on_exit": true
+  },
+  "migration": {
+    "legacy_native_chat_persisted": true,
+    "app_server_restarted_after_config_change": true,
+    "same_root_child_and_external_session_resumed": true,
+    "new_threads_use_openai": true,
+    "chat_storage_rewritten": false,
+    "rollback_preserves_unrelated_preferences": true,
+    "activation_failure_restores_previous_settings_and_service": true
+  },
+  "additional_checks": [
+    "integrated service direct real OpenAI parent and native Claude child",
+    "normal real parent compaction",
+    "ChatGPT account and rate-limit APIs",
+    "installed Haiku 5.5 high native task and same-session follow-up",
+    "installed app read_thread returned both completed turns and assignment/result",
+    "installed app navigation to acceptance chat",
+    "shared-service listener PID agreement and bind-failure cleanup"
+  ]
+}

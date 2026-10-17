@@ -302,7 +302,17 @@ pub fn configure(
             "Existing custom provider requires manual configuration; refusing to replace it"
         );
     }
-    config["model_provider"] = toml_edit::value("agentrelay");
+    let transport = crate::transport::load(home)?;
+    if let Some(transport) = &transport {
+        ensure!(
+            transport.backend == address,
+            "Configured address differs from the saved transport"
+        );
+        config["model_provider"] = toml_edit::value("openai");
+        config["openai_base_url"] = toml_edit::value(format!("http://{}", transport.listen));
+    } else {
+        config["model_provider"] = toml_edit::value("agentrelay");
+    }
     config["model_catalog_json"] = toml_edit::value(generated.to_string_lossy().as_ref());
     config["model_providers"]["agentrelay"]["name"] = toml_edit::value("AgentRelay");
     config["model_providers"]["agentrelay"]["base_url"] =
@@ -341,7 +351,7 @@ pub fn configure(
     )?;
     atomic_write(&config_path, config.to_string().as_bytes(), false)?;
     crate::runner::emit(
-        &json!({"configured":true,"provider":"agentrelay","native_model_profiles":profile_receipt.profiles.len(),"new_conversation_required":true,"service_start_required":true,"catalog_refresh":"rerun configure after upstream models change"}),
+        &json!({"configured":true,"provider":if transport.is_some(){"openai"}else{"agentrelay"},"native_model_profiles":profile_receipt.profiles.len(),"new_conversation_required":true,"service_start_required":true,"catalog_refresh":"rerun configure after upstream models change"}),
     )
 }
 
@@ -492,7 +502,7 @@ pub fn install_service(home: &Path, address: SocketAddr) -> Result<()> {
     )?;
     // Startup is a readiness wait, not evidence of an existing process hang.
     // launchd can throttle a recently replaced job for about ten seconds.
-    crate::service::wait_ready(address, std::time::Duration::from_secs(30))?;
+    crate::transport::wait_ready(home, address, std::time::Duration::from_secs(30))?;
     crate::runner::emit(
         &json!({"service_installed":true,"label":"com.agentrelay.provider","listen":address,"guardian_installed":true,"recovery_interval_seconds":crate::service::CHECK_INTERVAL_SECONDS}),
     )

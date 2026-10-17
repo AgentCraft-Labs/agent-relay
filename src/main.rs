@@ -36,6 +36,16 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1:39091")]
         listen: std::net::SocketAddr,
     },
+    /// Standalone diagnostic macOS bridge. Use codex migrate for managed activation.
+    ServeOpenai {
+        #[arg(long, default_value = "127.0.0.1:39092")]
+        listen: std::net::SocketAddr,
+        #[arg(long, default_value = "127.0.0.1:39091")]
+        backend: std::net::SocketAddr,
+        /// Exact trusted executable path; process names and HTTP headers are ignored.
+        #[arg(long)]
+        codex_bin: PathBuf,
+    },
     /// Bind an explicit task to a native root and agent path before spawn/follow-up.
     Prepare {
         #[arg(long, default_value = "claude")]
@@ -159,6 +169,24 @@ enum ProfileCommand {
 
 #[derive(Subcommand)]
 enum CodexCommand {
+    /// Activate the built-in OpenAI bridge after both service listeners are ready.
+    Migrate {
+        #[arg(long)]
+        codex_home: Option<PathBuf>,
+        #[arg(long)]
+        catalog: Option<PathBuf>,
+        #[arg(long)]
+        codex_bin: Option<PathBuf>,
+        #[arg(long, default_value = "127.0.0.1:39091")]
+        listen: std::net::SocketAddr,
+        #[arg(long, default_value = "127.0.0.1:39092")]
+        bridge_listen: std::net::SocketAddr,
+    },
+    /// Restore pre-bridge routing, preserving later preferences and chat history.
+    Rollback {
+        #[arg(long)]
+        codex_home: Option<PathBuf>,
+    },
     /// Upgrade the user integration and default profiles between external turns.
     Upgrade {
         #[arg(long)]
@@ -238,6 +266,38 @@ async fn run(cli: Cli) -> Result<()> {
     let home = cli.home.map(Ok).unwrap_or_else(default_home)?;
     match cli.command {
         Command::Codex {
+            command:
+                CodexCommand::Migrate {
+                    codex_home,
+                    catalog,
+                    codex_bin,
+                    listen,
+                    bridge_listen,
+                },
+        } => {
+            let codex_home = codex_home.unwrap_or_else(default_codex_home);
+            let settings = agent_relay::transport::Openai {
+                schema_version: 1,
+                listen: bridge_listen,
+                backend: listen,
+                codex_bin: agent_relay::openai_bridge::executable(codex_bin.as_deref())?,
+            };
+            return agent_relay::migration::activate(
+                &home,
+                &codex_home,
+                &catalog.unwrap_or_else(|| codex_home.join("models_cache.json")),
+                &settings,
+            );
+        }
+        Command::Codex {
+            command: CodexCommand::Rollback { codex_home },
+        } => {
+            return agent_relay::migration::rollback(
+                &home,
+                &codex_home.unwrap_or_else(default_codex_home),
+            );
+        }
+        Command::Codex {
             command: CodexCommand::Upgrade { wait_idle, listen },
         } => return codex::upgrade(&home, wait_idle, listen).await,
         Command::Codex {
@@ -303,7 +363,12 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Profile {
             command: ProfileCommand::List,
         } => runner::emit(&agent_relay::profiles::load(&home)?)?,
-        Command::Serve { listen } => provider::serve(&home, listen).await?,
+        Command::Serve { listen } => agent_relay::transport::serve(&home, listen).await?,
+        Command::ServeOpenai {
+            listen,
+            backend,
+            codex_bin,
+        } => agent_relay::openai_bridge::serve(&home, listen, backend, &codex_bin).await?,
         Command::Prepare {
             runtime,
             workspace,
@@ -450,4 +515,10 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Codex { .. } => unreachable!("handled before opening the registry"),
     }
     Ok(())
+}
+
+fn default_codex_home() -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| codex::user_root().expect("User home").join(".codex"))
 }

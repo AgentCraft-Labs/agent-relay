@@ -1,7 +1,9 @@
 pub mod catalog;
 pub mod codex;
 mod database;
+pub mod migration;
 pub mod model;
+pub mod openai_bridge;
 pub mod profiles;
 pub mod provider;
 pub mod runner;
@@ -9,3 +11,4 @@ pub mod runtime;
 pub mod selection;
 pub mod service;
 pub mod store;
+pub mod transport;

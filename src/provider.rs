@@ -59,7 +59,10 @@ impl Registry {
                  PRIMARY KEY(root,path));
              CREATE TABLE IF NOT EXISTS native_turns (
                  id TEXT PRIMARY KEY, root TEXT NOT NULL, child TEXT NOT NULL,
-                 task TEXT NOT NULL, generation INTEGER NOT NULL, result TEXT);",
+                 task TEXT NOT NULL, generation INTEGER NOT NULL, result TEXT);
+             CREATE TABLE IF NOT EXISTS native_checkpoints (
+                 turn TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE,
+                 root TEXT NOT NULL, path TEXT NOT NULL, child TEXT NOT NULL, model TEXT NOT NULL);",
         )?;
         // Snapshot legacy bindings before profiles can be added or changed.
         // New selections must never relabel or strand an existing worker.
@@ -236,6 +239,12 @@ impl Registry {
                 .as_str()
                 .context("Missing native agent metadata")?,
         )?;
+        ensure!(
+            extra["request_kind"]
+                .as_str()
+                .is_none_or(|kind| kind == "turn"),
+            "Only native task turns may claim an external execution"
+        );
         let path = extra["agent_name"]
             .as_str()
             .context("Missing canonical native agent path")?;
@@ -315,6 +324,20 @@ impl Registry {
             native["role"],
             native["model"]
         );
+        for item in request["input"].as_array().into_iter().flatten() {
+            if item["type"] == "compaction"
+                && let Some(token) = item["encrypted_content"].as_str()
+                && token.starts_with("agentrelay-checkpoint-v1:")
+            {
+                let matches: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM native_checkpoints WHERE token=?1 AND root=?2 AND path=?3 AND child=?4 AND model=?5)",
+                    params![token, root, path, child, request["model"].as_str()], |row| row.get(0))?;
+                ensure!(
+                    matches,
+                    "Native checkpoint belongs to another binding or is missing"
+                );
+            }
+        }
         if native["profile"].is_string()
             && let Some(effort) = &assignment.request.effort
         {
@@ -373,6 +396,90 @@ impl Registry {
             "Native turn completion is already recorded or missing"
         );
         Ok(())
+    }
+
+    /// Compact only the native wrapper. External CLI context stays in its own
+    /// durable session; no summarizing model or external task is launched.
+    /// The protocol's opaque encrypted_content field carries a random local
+    /// reference, not OpenAI ciphertext and not a decoded native prompt.
+    pub fn checkpoint(&self, request: &Value) -> Result<Value> {
+        let meta = &request["client_metadata"];
+        let root = meta["session_id"].as_str().context("Missing native root")?;
+        let child = meta["thread_id"].as_str().context("Missing native child")?;
+        let turn = meta["turn_id"].as_str().context("Missing native turn")?;
+        let model = request["model"].as_str().context("Missing model")?;
+        ensure!(
+            root != child,
+            "CLI checkpoints are reserved for native children"
+        );
+        let extra: Value = serde_json::from_str(
+            meta["x-codex-turn-metadata"]
+                .as_str()
+                .context("Missing native metadata")?,
+        )?;
+        ensure!(
+            extra["request_kind"] == "compaction"
+                && extra["compaction"]["implementation"] == "responses_compaction_v2",
+            "Unsupported native checkpoint operation"
+        );
+        let path = extra["agent_name"]
+            .as_str()
+            .context("Missing native path")?;
+        let mut conn = self.conn()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (bound, native): (Option<String>, String) = tx
+            .query_row(
+                "SELECT child,native FROM assignments WHERE root=?1 AND path=?2",
+                params![root, path],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .context("No prepared native binding for checkpoint")?;
+        ensure!(
+            bound.as_deref().is_none_or(|id| id == child),
+            "Native path belongs to another child"
+        );
+        let native: Value = serde_json::from_str(&native)?;
+        ensure!(
+            native["model"] == model,
+            "Checkpoint model differs from the pinned binding"
+        );
+        let previous: Option<(String, String, String, String, String)> = tx
+            .query_row(
+                "SELECT token,root,path,child,model FROM native_checkpoints WHERE turn=?1",
+                [turn],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let token = if let Some((token, old_root, old_path, old_child, old_model)) = previous {
+            ensure!(
+                old_root == root && old_path == path && old_child == child && old_model == model,
+                "Checkpoint turn belongs to another binding"
+            );
+            token
+        } else {
+            let token = format!("agentrelay-checkpoint-v1:{}", uuid::Uuid::new_v4());
+            tx.execute(
+                "UPDATE assignments SET child=?1 WHERE root=?2 AND path=?3 AND child IS NULL",
+                params![child, root, path],
+            )?;
+            tx.execute("INSERT INTO native_checkpoints(turn,token,root,path,child,model) VALUES(?1,?2,?3,?4,?5,?6)",
+                params![turn,token,root,path,child,model])?;
+            token
+        };
+        tx.commit()?;
+        Ok(
+            json!({"id":format!("cmp_{}",token.rsplit(':').next().unwrap_or_default()),
+            "type":"compaction","encrypted_content":token}),
+        )
     }
 }
 
@@ -444,7 +551,7 @@ pub async fn serve(home: &Path, address: SocketAddr) -> Result<()> {
     });
     let router = Router::new()
         .route("/health", get(|| async { "AgentRelay" }))
-        .route("/version", get(|| async { axum::Json(json!({"service":"AgentRelay","version":env!("CARGO_PKG_VERSION"),"sse_heartbeat_seconds":15})) }))
+        .route("/version", get(|| async { axum::Json(json!({"service":"AgentRelay","version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"sse_heartbeat_seconds":15,"native_checkpoints_v1":true})) }))
         .route("/responses", post(responses))
         .route("/v1/responses", post(responses))
         .layer(DefaultBodyLimit::max(16 * MAX_FRAME))
@@ -512,6 +619,30 @@ async fn respond(state: Arc<Service>, headers: HeaderMap, body: Bytes) -> Result
             }
         }
         return Ok(response.body(Body::from_stream(upstream.bytes_stream()))?);
+    }
+    let extra: Value = serde_json::from_str(
+        request["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .context("Missing native agent metadata")?,
+    )?;
+    if extra["request_kind"] == "compaction" {
+        let home = state.home.clone();
+        let item = tokio::task::spawn_blocking(move || Registry::open(&home)?.checkpoint(&request))
+            .await??;
+        let id = format!("resp_{}", uuid::Uuid::new_v4());
+        let frames = [
+            json!({"type":"response.created","response":{"id":id}}),
+            json!({"type":"response.output_item.done","item":item}),
+            json!({"type":"response.completed","response":{"id":id}}),
+        ];
+        let mut bytes = Vec::new();
+        for event in frames {
+            bytes.extend_from_slice(&frame(event)?);
+        }
+        return Ok(Response::builder()
+            .header("content-type", "text/event-stream")
+            .header("cache-control", "no-cache")
+            .body(Body::from(bytes))?);
     }
     let home = state.home.clone();
     let (registry, delivery) = tokio::task::spawn_blocking(move || -> Result<_> {

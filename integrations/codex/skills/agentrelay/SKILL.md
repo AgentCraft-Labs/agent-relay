@@ -7,7 +7,7 @@ description: Delegate explicitly requested work to Claude Code or another config
 
 Keep the conversation in the official Codex app. The native child executes through the AgentRelay Responses provider. There is one native child per external worker, with no extra Codex model inference inside it.
 
-Resolve `scripts/agentrelay` relative to this skill directory. Check the installed runner with `--version` and confirm that this conversation uses the `agentrelay` model provider. The native role `agentrelay_claude` must be available. If this conversation uses a different provider, explain that a new conversation using the configured provider is required. Do not fall back to a Codex worker that calls the CLI, and do not run the CLI directly from the parent as a substitute for native visibility.
+Resolve `scripts/agentrelay` relative to this skill directory and check its `--version`. Both supported transport modes are valid: the legacy `agentrelay` provider, or the built-in `openai` provider routed through the AgentRelay bridge. For the latter, the active user configuration's `openai_base_url` must match the loopback listener saved in AgentRelay's private `transport.json`; an arbitrary OpenAI conversation is not sufficient. Check configuration read-only when the route is unclear. The returned native role must be available. If routing or roles are unavailable, explain that the app/configuration must be reloaded before delegation. Do not fall back to a Codex worker that calls the CLI, and do not run the CLI directly from the parent as a substitute for native visibility.
 
 ## New delegation
 

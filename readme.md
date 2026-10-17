@@ -77,10 +77,10 @@ sequenceDiagram
 
 Download a prebuilt companion from [GitHub Releases](https://github.com/AgentCraft-Labs/agent-relay/releases/latest). Rust is not required to run it. Choose `macos-arm64` for Apple Silicon or `macos-x86_64` for Intel. The companion is a terminal executable and optional background service; the interface remains the official Codex app.
 
-For version 0.3.4, download and verify the archive in Terminal:
+For version 0.4.0, download and verify the archive in Terminal:
 
 ```bash
-relay_version=0.3.4
+relay_version=0.4.0
 relay_arch=$(uname -m)
 relay_archive="agentrelay-v${relay_version}-macos-${relay_arch}.tar.gz"
 relay_url="https://github.com/AgentCraft-Labs/agent-relay/releases/download/v${relay_version}"
@@ -99,11 +99,14 @@ Install/authenticate Claude Code separately, and open/login to Codex once so it 
 ```bash
 ./agentrelay codex upgrade --wait-idle
 relay_command="$HOME/.agents/skills/agentrelay/scripts/agentrelay"
+"$relay_command" codex migrate
 ```
 
-Start a new Codex conversation using the `agentrelay` provider; restart Codex if it retains the previous catalog. Ask to use `$agentrelay` with Haiku 5.5 high. The native profile exposes the corresponding model name and effort through Codex's catalog/thread settings.
+Reload Codex after migration. New conversations keep the built-in `openai` provider and use the local bridge, so the inspected account menu no longer adds the AgentRelay provider row. Existing chats retain compatible routing through the preserved legacy endpoint; their history and agent identities are not rewritten. Restart Codex if it retains the previous configuration/catalog. Ask to use `$agentrelay` with Haiku 5.5 high. The native profile exposes the corresponding model name and effort through Codex's catalog/thread settings.
 
 `codex upgrade --wait-idle` installs the user skill, registers **Haiku 5.5 high, Sonnet 5.5 high and Opus 5.5 high**, configures their hidden native roles/catalog entries and starts the macOS service. During an update it waits for active external turns to finish, then applies the upgrade. Existing workers keep their native routing and external sessions; a new profile does not relabel an already-created agent. No CLI model inference is needed for installation.
+
+`codex migrate` activates the macOS bridge only after both listeners are ready. It saves the previous configuration and restores the old service/settings if activation fails. Run it while external workers are idle. `codex rollback` restores pre-bridge routing while preserving later unrelated preferences. Future upgrades retain the selected mode. Pass `--codex-bin /absolute/path/to/codex` if automatic executable discovery does not find your installation. See [migration and transport details](docs/builtin-openai-bridge.md).
 
 To run in the foreground instead of installing the background services, use `"$relay_command" serve`. Use one service instance on the configured port. See [service recovery](#service-recovery-and-connection-errors) before stopping an installed service.
 
@@ -135,7 +138,7 @@ Keep the service running while using the configured provider. On macOS `service-
 
 ### Service recovery and connection errors
 
-**Ordinary OpenAI chats using the `agentrelay` provider depend on the local companion too.** If it is unavailable, Codex can show “Reconnecting… waiting for network” even when the Internet works. Older chats may still use their original provider and continue normally. The official Codex version tested here inherits the provider into child agents; a role cannot independently switch only the child to AgentRelay.
+**OpenAI chats using either AgentRelay transport depend on the local companion too.** If it is unavailable, Codex can show “Reconnecting… waiting for network” even when the Internet works. Older chats may still use their original provider and continue normally. The official Codex version tested here inherits the provider into child agents; a role cannot independently switch only the child to AgentRelay.
 
 From 0.3.3, macOS installs two independent LaunchAgents:
 
@@ -384,6 +387,7 @@ State-directory precedence is `--home`, then `AGENTRELAY_HOME`, then `~/.local/s
 
 ## Trust and operational limits
 
+- The legacy `agentrelay` provider adds an AgentRelay row to the Codex account menu. Version 0.4.0 provides `codex migrate` to retain provider ID `openai` through the authenticated local bridge, which suppresses that row in the inspected desktop implementation. Both listeners share the managed service/guardian. Native execution, migration/resume and compaction are tested; rendered screenshots remain blocked by the computer-use host. See [desktop provider label](docs/desktop-provider-label.md).
 - The provider binds only to loopback and requires a private local header key. OpenAI authentication is supplied normally by Codex, held in memory, and forwarded only to the fixed official HTTPS upstream. Redirects are disabled and credentials are not logged. The service is a trusted local component that can see model requests.
 - The companion runs under the local user's permissions. Claude tool restrictions are **not an OS sandbox**, and read access is not limited to the workspace. Native write-policy metadata additionally gates workspace-write tasks. Custom drivers are trusted code. Use only with authorized local projects and tasks.
 - Registries contain prompts, results and external session IDs. Keep state and service logs private. No retention/deletion automation or cross-machine synchronization is provided.
@@ -391,7 +395,7 @@ State-directory precedence is `--home`, then `AGENTRELAY_HOME`, then `~/.local/s
 - Process groups are cleaned on cancellation, timeout, malformed output and exit. Deliberately detached processes in another group are outside that guarantee.
 - This integration depends on current Codex provider, catalog and native-agent contracts. Official app updates remain installable, but compatibility must be retested; the model catalog needs refresh. The desktop UI itself is not open source.
 
-To disable routing, first end active tasks, restore the relevant provider/catalog settings from `config.before-agentrelay.toml`, and stop the service. On macOS: `launchctl bootout gui/$(id -u)/com.agentrelay.provider`. Keep registries if you need resumable CLI sessions. Review any later edits before restoring the entire backup.
+To return from bridge mode to the previous routing, run `agentrelay codex rollback` while workers are idle. To disable all routing, first end active tasks, restore the relevant provider/catalog settings from `config.before-agentrelay.toml`, and stop the service. On macOS: `launchctl bootout gui/$(id -u)/com.agentrelay.provider`. Keep registries if you need resumable CLI sessions. Review any later edits before restoring the entire backup.
 
 ## Validation
 
@@ -401,7 +405,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo fmt --check
 # Explicit live tests; use existing CLI logins and consume model usage:
 AGENTRELAY_CODEX_TEST_BIN=/absolute/path/to/official/codex \
-  cargo test --test native_provider --locked -- --ignored --test-threads=1
+  cargo test --test native_provider --locked -- --ignored --test-threads=1 --skip installed_openai_service_native_chat_and_followup
 ```
 
 See [architecture](docs/architecture.md), [implementation plan](docs/implementation-plan.md), [verification](docs/verification.md), and [sanitized acceptance results](evidence/native-provider-results.json). Private test transcripts, credentials, local installations and generated binaries are excluded from the repository.

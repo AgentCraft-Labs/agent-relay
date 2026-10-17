@@ -37,3 +37,9 @@ This distribution provides the command-line companion/background service, withou
 Version 0.3.3 also installs an independent macOS guardian before restarting the provider. The guardian restores missing launchd registrations every 10 seconds; a healthy provider is not restarted. `codex service-ensure` performs the same recovery immediately. See the README before intentionally disabling either service.
 
 Version 0.3.4 extends the guardian to verified process hangs and isolates serialized database/native-worker execution from parent HTTP handling. Recovery preserves persistent sessions but can interrupt a turn; follow-up remains explicit.
+
+## Built-in OpenAI transport (0.4.0)
+
+After `codex upgrade --wait-idle`, run `codex migrate` while external workers are idle. It stages the dual-listener configuration, verifies readiness, and switches the user default to `openai`. Existing chats keep the legacy provider definition and authenticated listener. A failed activation restores previous settings/service; `codex rollback` restores routing fields while retaining later unrelated preferences. Upgrades preserve an already selected bridge mode. The companion remains one owned service process plus its independent periodic guardian.
+
+Rendered UI access is blocked by the computer-use host in local acceptance. Release notes distinguish tested backend/configuration behavior from screenshot verification.

@@ -76,27 +76,31 @@ pub fn guardian_document(binary: &Path, home: &Path, address: SocketAddr) -> Res
 
 /// Probe only the loopback service identity; never send credentials or prompts.
 pub fn healthy(address: SocketAddr) -> Result<bool> {
+    Ok(probe(address)?.is_some())
+}
+
+pub(crate) fn probe(address: SocketAddr) -> Result<Option<serde_json::Value>> {
     ensure!(address.ip().is_loopback(), "Only loopback is allowed");
     let mut stream = match TcpStream::connect_timeout(&address, Duration::from_secs(1)) {
         Ok(stream) => stream,
-        Err(_) => return Ok(false),
+        Err(_) => return Ok(None),
     };
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let request = format!("GET /version HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).is_err() {
-        return Ok(false);
+        return Ok(None);
     }
     let mut bytes = Vec::new();
     if stream.take(16384).read_to_end(&mut bytes).is_err() {
-        return Ok(false);
+        return Ok(None);
     }
     let response = String::from_utf8_lossy(&bytes);
     let Some((headers, body)) = response.split_once("\r\n\r\n") else {
-        return Ok(false);
+        return Ok(None);
     };
     if !headers.starts_with("HTTP/1.1 200 ") && !headers.starts_with("HTTP/1.0 200 ") {
-        return Ok(false);
+        return Ok(None);
     }
     let version: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
     // A different listener must never be killed or replaced by this guardian.
@@ -104,10 +108,10 @@ pub fn healthy(address: SocketAddr) -> Result<bool> {
         version["service"] == "AgentRelay",
         "Configured port is occupied by another service"
     );
-    Ok(true)
+    Ok(Some(version))
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 pub(crate) fn wait_ready(address: SocketAddr, timeout: Duration) -> Result<()> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
@@ -277,7 +281,7 @@ fn ensure_service_named(root: &Path, home: &Path, address: SocketAddr, label: &s
         return Err(error.into());
     }
     let failures_path = home.join("service-health.json");
-    let ready = healthy(address)?;
+    let ready = crate::transport::healthy(home, address)?;
     if ready {
         if failures_path.exists() {
             std::fs::remove_file(&failures_path)?;
@@ -315,7 +319,7 @@ fn ensure_service_named(root: &Path, home: &Path, address: SocketAddr, label: &s
             HEALTH_FAILURE_LIMIT
         );
         // Recheck readiness before terminating a process that may have recovered.
-        if healthy(address)? {
+        if crate::transport::healthy(home, address)? {
             std::fs::remove_file(&failures_path)?;
             return Ok(());
         }
@@ -327,7 +331,7 @@ fn ensure_service_named(root: &Path, home: &Path, address: SocketAddr, label: &s
     }
     let recovered = recover(&mut controller, ready)?;
     if recovered {
-        wait_ready(address, Duration::from_secs(5))?;
+        crate::transport::wait_ready(home, address, Duration::from_secs(10))?;
         return crate::runner::emit(&json!({"service_ready":true,"registration_recovered":true}));
     }
     // Keep periodic checks silent while healthy, without growing log files.
@@ -370,6 +374,16 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[ignore = "Starts an isolated macOS LaunchAgent and freezes only its fixture process"]
     fn registered_hang_is_restarted_without_touching_other_services() {
+        registered_hang(false);
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
+    #[ignore = "Freezes an isolated dual-listener LaunchAgent, then tests re-registration"]
+    fn integrated_transport_hang_and_unload_recover_both_listeners() {
+        registered_hang(true);
+    }
+    #[cfg(target_os = "macos")]
+    fn registered_hang(integrated: bool) {
         use std::{
             process::Command,
             time::{Duration, Instant},
@@ -387,6 +401,25 @@ mod tests {
         let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = socket.local_addr().unwrap();
         drop(socket);
+        if integrated {
+            let bridge = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let listen = bridge.local_addr().unwrap();
+            drop(bridge);
+            let settings = crate::transport::Openai {
+                schema_version: 1,
+                listen,
+                backend: address,
+                // Health-only fixture: keep its admitted executable beside
+                // the service, outside protected developer workspace folders.
+                codex_bin: executable.clone(),
+            };
+            crate::codex::atomic_write(
+                &home.join(crate::transport::FILE),
+                &serde_json::to_vec(&settings).unwrap(),
+                false,
+            )
+            .unwrap();
+        }
         let label = format!("com.agentrelay.regression.{}", uuid::Uuid::new_v4());
         // SAFETY: getuid has no pointer arguments or side effects.
         let domain = format!("gui/{}", unsafe { libc::getuid() });
@@ -420,8 +453,19 @@ mod tests {
                 .success()
         );
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !healthy(address).unwrap() {
-            assert!(Instant::now() < deadline);
+        while !crate::transport::healthy(&home, address).unwrap() {
+            if Instant::now() >= deadline {
+                let job = Command::new("launchctl")
+                    .args(["print", &target])
+                    .output()
+                    .unwrap();
+                panic!(
+                    "fixture startup failed: {}\n{}\n{}",
+                    std::fs::read_to_string(home.join("err.log")).unwrap_or_default(),
+                    std::fs::read_to_string(home.join("out.log")).unwrap_or_default(),
+                    String::from_utf8_lossy(&job.stdout)
+                );
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
         let pid = || {
@@ -461,13 +505,26 @@ mod tests {
         assert_eq!(pid(), original);
         std::thread::sleep(Duration::from_secs(10));
         ensure_service_named(root, &home, address, &label).unwrap();
-        assert!(healthy(address).unwrap());
+        assert!(crate::transport::healthy(&home, address).unwrap());
         assert_ne!(pid(), original);
         assert!(!home.join("service-health.json").exists());
         println!(
             "isolated registered-hang recovery passed in {:.2}s",
             start.elapsed().as_secs_f64()
         );
+        if integrated {
+            assert!(
+                Command::new("launchctl")
+                    .args(["bootout", &target])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            ensure_service_named(root, &home, address, &label).unwrap();
+            assert!(crate::transport::healthy(&home, address).unwrap());
+            println!("isolated dual-listener missing-registration recovery passed");
+        }
     }
     #[test]
     fn hangs_require_three_separated_failures_of_the_same_process() {
